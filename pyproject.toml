@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "penny-tracker"
+version = "0.1.0"
+description = "A personal finance tracker with web scraping capabilities"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Shenghuanjie", email = "your.email@example.com"}
+]
+keywords = ["finance", "budget", "expense-tracker", "web-scraping", "selenium"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Office/Business :: Financial",
+]
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
+    "click>=8.1",
+    "python-dotenv>=1.0",
+    "sqlalchemy>=2.0",
+    "openpyxl>=3.1",
+    "tabulate>=0.9",
+    "pyyaml>=6.0",
+    "selenium>=4.15",
+    "beautifulsoup4>=4.12",
+    "lxml>=4.9",
+    "requests>=2.31",
+    "pillow>=10.0",
+    "webdriver-manager>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "black>=23.0",
+    "ruff>=0.1",
+    "mypy>=1.5",
+    "pre-commit>=3.5",
+    "pytest-selenium>=4.0",
+]
+
+[project.scripts]
+penny-tracker = "penny_tracker.cli:main"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "W", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--verbose",
+    "--cov=src/penny_tracker",
+    "--cov-report=html",
+    "--cov-report=term-missing",
+]

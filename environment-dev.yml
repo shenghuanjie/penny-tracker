@@ -1,0 +1,42 @@
+name: penny-tracker-dev
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  # Core dependencies
+  - pandas>=2.0
+  - numpy>=1.24
+  - matplotlib>=3.7
+  - seaborn>=0.12
+  - click>=8.1
+  - python-dotenv>=1.0
+  - sqlalchemy>=2.0
+  - openpyxl>=3.1
+  - tabulate>=0.9
+  - pyyaml>=6.0
+  # Scraping dependencies
+  - selenium>=4.15
+  - beautifulsoup4>=4.12
+  - lxml>=4.9
+  - requests>=2.31
+  - pillow>=10.0
+  # Browser drivers
+  - firefox
+  - geckodriver
+  # Development dependencies
+  - pytest>=7.4
+  - pytest-cov>=4.1
+  - black>=23.0
+  - ruff>=0.1
+  - mypy>=1.5
+  - pre-commit>=3.5
+  - jupyter>=1.0
+  - ipython>=8.0
+  - pip
+  - pip:
+    - webdriver-manager>=4.0
+    - selenium-stealth>=1.0.6
+    - fake-useragent>=1.4
+    - pytest-selenium>=4.0
+    - -e .
