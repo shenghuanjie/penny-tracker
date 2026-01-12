@@ -135,72 +135,80 @@ def main():
 
         deal_list = []
         seen_ids = set()
-        max_items = 5
+        max_items = 10000
         patience = 0
 
         print("Starting item collection...")
-        while len(deal_list) < max_items:
-            # Re-fetch rows every time to avoid 'StaleElementReferenceException'
-            rows = driver.find_elements(By.CLASS_NAME, "summary-row")
-            initial_count = len(seen_ids)
 
-            for i in range(len(rows)):
-                if len(deal_list) >= max_items: break
+        # Save results
+        with open("rebel_final_report.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["name", "price", "url", "image", "hd_status"])
+            writer.writeheader()
+            while len(deal_list) < max_items:
+                # Re-fetch rows every time to avoid 'StaleElementReferenceException'
+                rows = driver.find_elements(By.CLASS_NAME, "summary-row")
+                initial_count = len(seen_ids)
 
-                # Re-fetch the specific row by index because the list updates dynamically
-                current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
-                if i >= len(current_rows): break
-                row = current_rows[i]
+                for i in range(len(rows)):
+                    if len(deal_list) >= max_items: break
 
-                try:
-                    name = row.find_element(By.CLASS_NAME, "title-column").text.splitlines()[
-                        0].strip()
-                    price = row.find_element(By.XPATH, "./td[3]").text.strip()
-                    item_id = f"{name}_{price}"
+                    # Re-fetch the specific row by index because the list updates dynamically
+                    current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
+                    if i >= len(current_rows): break
+                    row = current_rows[i]
 
-                    if item_id in seen_ids: continue
-
-                    # 1. Capture Image URL
-                    img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
-
-                    # 2. Click Row (using JS to be extra safe)
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", row)
-                    time.sleep(0.5)
-                    driver.execute_script("arguments[0].click();", row)
-
-                    # 3. Grab HD Link from Overlay
-                    hd_link_elem = WebDriverWait(driver, 8).until(
-                        EC.presence_of_element_located((By.XPATH, "//a[@target='_blank']"))
-                    )
-                    hd_url = hd_link_elem.get_attribute("href")
-
-                    # 4. Close Overlay
-                    driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
-                    WebDriverWait(driver, 5).until(
-                        EC.invisibility_of_element_located((By.CLASS_NAME, "close-menu-btn")))
-
-                    deal_list.append(
-                        {"name": name, "price": price, "url": hd_url, "image": img_url})
-                    seen_ids.add(item_id)
-                    print(f"[{len(deal_list)}] Collected: {name[:35]}...")
-
-                except Exception as e:
-                    # Attempt to close overlay if something went wrong
                     try:
+                        name = row.find_element(By.CLASS_NAME, "title-column").text.splitlines()[
+                            0].strip()
+                        price = row.find_element(By.XPATH, "./td[3]").text.strip()
+                        item_id = f"{name}_{price}"
+
+                        if item_id in seen_ids: continue
+
+                        # 1. Capture Image URL
+                        img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
+
+                        # 2. Click Row (using JS to be extra safe)
+                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", row)
+                        time.sleep(0.5)
+                        driver.execute_script("arguments[0].click();", row)
+
+                        # 3. Grab HD Link from Overlay
+                        hd_link_elem = WebDriverWait(driver, 8).until(
+                            EC.presence_of_element_located((By.XPATH, "//a[@target='_blank']"))
+                        )
+                        hd_url = hd_link_elem.get_attribute("href")
+
+                        # 4. Close Overlay
                         driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
-                    except:
-                        pass
-                    continue
+                        WebDriverWait(driver, 5).until(
+                            EC.invisibility_of_element_located((By.CLASS_NAME, "close-menu-btn")))
 
-            # Termination Logic
-            if len(seen_ids) == initial_count:
-                patience += 1
-                if patience >= 3: break
-            else:
-                patience = 0
+                        current_deal = {
+                            "name": name, "price": price, "url": hd_url, "image": img_url}
+                        # write to the disk
+                        writer.writerow(current_deal)
+                        deal_list.append(current_deal)
+                        seen_ids.add(item_id)
+                        print(f"[{len(deal_list)}] Collected: {name[:35]}...")
 
-            driver.execute_script("window.scrollBy(0, 800);")
-            time.sleep(2)
+                    except Exception as e:
+                        # Attempt to close overlay if something went wrong
+                        try:
+                            driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
+                        except:
+                            pass
+                        continue
+
+                # Termination Logic
+                if len(seen_ids) == initial_count:
+                    patience += 1
+                    if patience >= 3: break
+                else:
+                    patience = 0
+
+                driver.execute_script("window.scrollBy(0, 800);")
+                time.sleep(2)
 
         # Verification & HTML Report
         print(f"\nVerifying {len(deal_list)} items on Home Depot...")
@@ -210,12 +218,6 @@ def main():
 
     finally:
         driver.quit()
-
-    # Save results
-    with open("rebel_final_report.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["name", "price", "url", "image", "hd_status"])
-        writer.writeheader()
-        writer.writerows(deal_list)
 
     # (Insert your generate_html_report function here)
     print("Scraping complete. Saving report...")
