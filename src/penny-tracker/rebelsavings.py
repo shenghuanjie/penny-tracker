@@ -1,12 +1,16 @@
 import time
 import csv
+import os
+import argparse
+from lib2to3.pgen2 import driver
+
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 
-def generate_html_report(deals):
+def generate_html_report(deals, output_path):
     """Creates a visual HTML report with images and status colors."""
     html = """
     <html><head><style>
@@ -18,22 +22,35 @@ def generate_html_report(deals):
         .clearance { color: #2ecc71; font-weight: bold; }
         .penny_candidate { color: #f39c12; font-weight: bold; }
         .penny { color: #3498db; }
+        .unchecked { color: #7f8c8d; font-style: italic; }
     </style></head><body>
         <h2>Home Depot Clearance Report</h2>
         <table><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Link</th></tr>"""
 
     for d in deals:
+        # Handle cases where CSV might not have status or image
+        status = d.get('hd_status', 'unchecked')
+        # If status is empty string, treat as unchecked
+        if not status: status = 'unchecked'
+
+        image_src = d.get('image', '')
+        name = d.get('name', 'Unknown')
+        price = d.get('price', 'N/A')
+        url = d.get('url', '#')
+
         html += f"""<tr>
-            <td><img src="{d['image']}"></td>
-            <td>{d['name']}</td>
-            <td>{d['price']}</td>
-            <td class="{d['hd_status']}">{d['hd_status'].upper()}</td>
-            <td><a href="{d['url']}" target="_blank">Link</a></td>
+            <td><img src="{image_src}"></td>
+            <td>{name}</td>
+            <td>{price}</td>
+            <td class="{status}">{status.upper()}</td>
+            <td><a href="{url}" target="_blank">Link</a></td>
         </tr>"""
 
     html += "</table></body></html>"
-    with open("report.html", "w", encoding="utf-8") as f: f.write(html)
-    print("\nVisual report created: report.html")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"\nVisual report created: {output_path}")
 
 
 def navigate_ca_filters(driver):
@@ -90,14 +107,12 @@ def verify_on_home_depot(driver, deal):
             time.sleep(3)  # Wait for iframe to mount
 
             # 2. SWITCH TO THE IFRAME
-            # We look for the iframe you provided
             wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "thd-drawer-frame")))
 
             # 3. Scroll inside the iframe context
-            # In the iframe, the scrollable area is usually the body or a specific div
-            for _ in range(3):
+            for _ in range(1):
                 driver.execute_script("window.scrollBy(0, 1000);")
-                time.sleep(1)
+                time.sleep(3)
 
             # 4. Search for the Badge
             badge_xpath = "//img[contains(@src, 'Value-Pricing-Clearance')]"
@@ -109,8 +124,10 @@ def verify_on_home_depot(driver, deal):
             return status
 
         except Exception as e:
-            print(f"Iframe/Overlay check failed: {e}")
+            # print(f"Iframe/Overlay check failed: {e}")
             driver.switch_to.default_content()  # Always switch back on error
+        finally:
+            time.sleep(3)
 
         return "penny"
 
@@ -121,6 +138,56 @@ def verify_on_home_depot(driver, deal):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="RebelSavings Scraper & Reporter")
+
+    # 1. Max Items
+    parser.add_argument("-m", "--max-items", type=int, default=None,
+                        help="Maximum number of items to scrape (default: None)")
+
+    # 2. Read CSV Only
+    parser.add_argument("-f", "--from-csv", type=str, metavar="FILE",
+                        default="rebel_final_report.csv",
+                        help="Path to an existing CSV file. "
+                             "If provided, skips scraping and only generates the report.")
+
+    # 3. Output Folder
+    parser.add_argument("-o", "--output-dir", type=str, default=".",
+                        help="Folder to save the CSV and HTML report (default: current directory)")
+
+    args = parser.parse_args()
+
+    # Ensure output directory exists
+    if args.output_dir and not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+
+    # Define Output Paths
+    csv_filename = "rebel_final_report.csv"
+    html_filename = "report.html"
+    deal_list = []
+
+    # If a CSV input is not provided, we use the standard output name
+    # If a CSV input IS provided, we still output the HTML to the output dir
+
+    report_path = os.path.join(args.output_dir, html_filename)
+    csv_output_path = os.path.join(args.output_dir, csv_filename)
+
+    # --- MODE: REPORT ONLY ---
+    if args.from_csv:
+        print(f"Reading data from {args.from_csv}...")
+        deal_list = []
+        try:
+            with open(args.from_csv, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    deal_list.append(row)
+
+            print(f"Loaded {len(deal_list)} items.")
+
+        except FileNotFoundError:
+            print(f"Error: File {args.from_csv} not found.")
+            return
+
+    # --- MODE: SCRAPE AND VERIFY ---
 
     options = uc.ChromeOptions()
     # Force version 138 to match your browser
@@ -133,26 +200,29 @@ def main():
         # Help the virtual scroll by zooming out
         driver.execute_script("document.body.style.zoom='75%'")
 
-        deal_list = []
-        seen_ids = set()
-        max_items = 10000
+        if deal_list:
+            seen_ids = set(deal['name'] for deal in deal_list)
+        else:
+            seen_ids = set()
+        max_items = args.max_items  # Use the argument
+        if max_items is None:
+            max_items = float('inf')
         patience = 0
 
-        print("Starting item collection...")
+        print(f"Starting item collection (Max: {max_items})...")
 
-        # Save results
-        with open("rebel_final_report.csv", "w", newline="", encoding="utf-8") as f:
+        # Save results to the specified output folder
+        with open(csv_output_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=["name", "price", "url", "image", "hd_status"])
             writer.writeheader()
+
             while len(deal_list) < max_items:
-                # Re-fetch rows every time to avoid 'StaleElementReferenceException'
                 rows = driver.find_elements(By.CLASS_NAME, "summary-row")
                 initial_count = len(seen_ids)
 
                 for i in range(len(rows)):
                     if len(deal_list) >= max_items: break
 
-                    # Re-fetch the specific row by index because the list updates dynamically
                     current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
                     if i >= len(current_rows): break
                     row = current_rows[i]
@@ -161,46 +231,50 @@ def main():
                         name = row.find_element(By.CLASS_NAME, "title-column").text.splitlines()[
                             0].strip()
                         price = row.find_element(By.XPATH, "./td[3]").text.strip()
-                        item_id = f"{name}_{price}"
+                        item_id = name
 
                         if item_id in seen_ids: continue
 
-                        # 1. Capture Image URL
                         img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
 
-                        # 2. Click Row (using JS to be extra safe)
-                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", row)
-                        time.sleep(0.5)
+                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});",
+                                              row)
+                        time.sleep(3)
                         driver.execute_script("arguments[0].click();", row)
 
-                        # 3. Grab HD Link from Overlay
                         hd_link_elem = WebDriverWait(driver, 8).until(
                             EC.presence_of_element_located((By.XPATH, "//a[@target='_blank']"))
                         )
                         hd_url = hd_link_elem.get_attribute("href")
+                        time.sleep(2)
 
-                        # 4. Close Overlay
                         driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
                         WebDriverWait(driver, 5).until(
                             EC.invisibility_of_element_located((By.CLASS_NAME, "close-menu-btn")))
 
+                        # Note: hd_status is initially empty/None, filled later
                         current_deal = {
-                            "name": name, "price": price, "url": hd_url, "image": img_url}
-                        # write to the disk
+                            "name": name,
+                            "price": price,
+                            "url": hd_url,
+                            "image": img_url,
+                            "hd_status": ""
+                        }
+
                         writer.writerow(current_deal)
                         deal_list.append(current_deal)
                         seen_ids.add(item_id)
                         print(f"[{len(deal_list)}] Collected: {name[:35]}...")
+                        time.sleep(3)
 
                     except Exception as e:
-                        # Attempt to close overlay if something went wrong
                         try:
                             driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
                         except:
                             pass
+                        time.sleep(10)
                         continue
 
-                # Termination Logic
                 if len(seen_ids) == initial_count:
                     patience += 1
                     if patience >= 3: break
@@ -214,14 +288,15 @@ def main():
         print(f"\nVerifying {len(deal_list)} items on Home Depot...")
         for d in deal_list:
             d['hd_status'] = verify_on_home_depot(driver, d)
+            # Optional: You could update the CSV here row by row if desired,
+            # but currently we just generate the HTML at the end.
             time.sleep(3)
 
     finally:
         driver.quit()
 
-    # (Insert your generate_html_report function here)
     print("Scraping complete. Saving report...")
-    generate_html_report(deal_list)
+    generate_html_report(deal_list, report_path)
 
 
 if __name__ == "__main__":
