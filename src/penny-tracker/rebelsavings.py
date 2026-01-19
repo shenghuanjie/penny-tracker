@@ -422,7 +422,7 @@ def main():
                         HDStatus.FAILURE, HDStatus.ERROR, HDStatus.BLOCKED}:
                         break
                     else:
-                        waittime = random.randint(60, 120)
+                        waittime = random.randint(120, 360)
                         time.sleep(waittime)
                         print(f"Blocked. Waiting for {waittime} seconds...")
 
