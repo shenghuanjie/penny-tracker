@@ -20,6 +20,7 @@ CSV_FILENAME = "rebel_final_report.tsv"
 
 class HDStatus:
     PENNY = 'penny'
+    NOT_PENNY = 'not_penny'
     PENNY_CANDIDATE = 'penny_candidate'
     CLEARANCE = 'clearance'
     ERROR = 'error'
@@ -31,15 +32,23 @@ def generate_html_report(deals, output_path):
     """Creates a visual HTML report with images and status colors."""
     html = """
     <html><head><style>
-        body { font-family: Arial; background: #f0f2f5; padding: 20px; }
-        table { width: 100%; border-collapse: collapse; background: white; }
-        th, td { padding: 10px; border: 1px solid #ddd; text-align: left; }
-        th { background: #f8991d; color: white; }
-        img { width: 70px; height: auto; border-radius: 5px; }
-        .clearance { color: #2ecc71; font-weight: bold; }
-        .penny_candidate { color: #f39c12; font-weight: bold; }
-        .penny { color: #3498db; }
-        .unchecked { color: #7f8c8d; font-style: italic; }
+        body { font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }
+        h2 { color: #333; }
+        table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; vertical-align: middle; }
+        th { background: #f96302; color: white; font-weight: bold; } /* Home Depot Orange */
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        img { width: 70px; height: auto; border-radius: 4px; object-fit: cover; }
+
+        /* Status Colors */
+        .penny { color: #3498db; font-weight: bold; }             /* Blue: Likely Penny */
+        .not_penny { color: #e74c3c; font-weight: bold; }         /* Red: Definite No */
+        .penny_candidate { color: #f39c12; font-weight: bold; }   /* Orange: Strong Maybe */
+        .clearance { color: #2ecc71; font-weight: bold; }         /* Green: Verified Clearance */
+        .error { color: #8e44ad; font-weight: bold; }             /* Purple: Code Exception */
+        .failure { color: #95a5a6; font-style: italic; }          /* Grey: Page Crash/Missing Data */
+        .blocked { color: #c0392b; font-weight: bold; text-decoration: underline; } /* Dark Red: Bot Detected */
+
     </style></head><body>
         <h2>Home Depot Clearance Report</h2>
         <table><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Link</th></tr>"""
@@ -127,8 +136,6 @@ def verify_on_home_depot(driver, deal):
         driver.get(deal['url'])
 
         # --- Stage 0: Immediate Block/Error Check ---
-        # We use find_elements (plural) so it doesn't throw an error if not found.
-        # It simply returns an empty list if the page is fine.
         error_msgs = driver.find_elements(
             By.XPATH, "//div[@class='msg' and contains(text(), 'Something went wrong')]")
 
@@ -137,6 +144,20 @@ def verify_on_home_depot(driver, deal):
             return HDStatus.BLOCKED
 
         wait = WebDriverWait(driver, 12)
+
+        # --- Stage 0.5: Normal Stock Check (The "Pickup" Element) ---
+        # If "Pickup" is displayed, it usually means the item is in stock at normal/clearance price
+        # and not a hidden "Penny" item.
+        # We use a loose XPath to match the "Pickup" text inside the styled div.
+        try:
+            pickup_badges = driver.find_elements(
+                By.XPATH, "//div[contains(@class, 'sui-font-bold') and contains(text(), 'Pickup')]")
+
+            if pickup_badges:
+                print(f"Normal stock found for {deal['name'][:10]}: 'Pickup' option detected.")
+                return HDStatus.NOT_PENNY
+        except Exception:
+            pass  # Continue if check fails or element not found
 
         # --- Stage 1: Main Page Text ---
         try:
@@ -151,6 +172,7 @@ def verify_on_home_depot(driver, deal):
             time.sleep(3)
             driver.execute_script("window.scrollBy(0, -1000);")
             time.sleep(2)
+
         # --- Stage 2: Iframe Badge Check ---
         try:
             # 1. Open the Store Overlay
@@ -426,7 +448,6 @@ def main():
                             HDStatus.FAILURE, HDStatus.ERROR, HDStatus.BLOCKED}:
                             break
                         else:
-
                             waittime = random.randint(120, 360)
                             time.sleep(waittime)
                             print(f"Blocked. Waiting for {waittime} seconds...")
