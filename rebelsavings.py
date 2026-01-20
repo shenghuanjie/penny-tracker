@@ -283,7 +283,7 @@ def main():
         os.makedirs(args.output_dir)
 
     # Define Output Paths
-    html_filename = "report.html"
+    html_filename = "index.html"
     deal_list = []
 
     # If a CSV input is not provided, we use the standard output name

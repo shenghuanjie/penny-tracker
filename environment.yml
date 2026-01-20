@@ -1,32 +1,13 @@
-name: penny-tracker
+name: fb_scraper
 channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.11
-  # Core dependencies
-  - pandas>=2.0
-  - numpy>=1.24
-  - matplotlib>=3.7
-  - seaborn>=0.12
-  - click>=8.1
-  - python-dotenv>=1.0
-  - sqlalchemy>=2.0
-  - openpyxl>=3.1
-  - tabulate>=0.9
-  - pyyaml>=6.0
-  # Scraping dependencies
-  - selenium>=4.15
-  - beautifulsoup4>=4.12
-  - lxml>=4.9
-  - requests>=2.31
-  - pillow>=10.0
-  # Browser drivers
-  - firefox
-  - geckodriver
+  - python=3.9
   - pip
+  - pandas
+  - requests
   - pip:
-    - webdriver-manager>=4.0
-    - selenium-stealth>=1.0.6
-    - fake-useragent>=1.4
-    - -e .
+      - facebook-scraper
+      - lxml_html_clean
+      - undetected-chromedriver
