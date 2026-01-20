@@ -214,6 +214,17 @@ def verify_on_home_depot(driver, deal):
         return HDStatus.ERROR
 
 
+def get_driver():
+    # profile_path = os.path.join(os.getcwd(), "hd_profile")
+    options = uc.ChromeOptions()
+    # options.add_argument(f"--user-data-dir={profile_path}")
+    # Important: Randomize window size slightly to avoid "default selenium" dimensions
+    options.add_argument("--window-size=1920,1080")
+    # Force version 138 to match your browser
+    driver = uc.Chrome(options=options, version_main=138)
+    return driver
+
+
 def pad_row(input_list, target_char_length=ROW_SIZE, pad_char=" "):
     """
     Converts a list to a tab-delimited string of a strictly fixed character length.
@@ -308,9 +319,7 @@ def main():
         print(f"Loaded {len(deal_list)} items.")
 
     if not args.report_only:
-        options = uc.ChromeOptions()
-        # Force version 138 to match your browser
-        driver = uc.Chrome(options=options, version_main=138)
+        driver = get_driver()
         # --- MODE: SCRAPE AND VERIFY ---
         try:
             if deal_list:
@@ -448,9 +457,14 @@ def main():
                             HDStatus.FAILURE, HDStatus.ERROR, HDStatus.BLOCKED}:
                             break
                         else:
-                            waittime = random.randint(120, 360)
-                            time.sleep(waittime)
+                            if random.randint(0, 1):
+                                driver.get('https://www.homedepot.com/')
+                            else:
+                                driver.get('https://www.google.com/')
+                            waittime = random.randint(300, 600)
                             print(f"Blocked. Waiting for {waittime} seconds...")
+                            time.sleep(waittime)
+                            print(f"Have waited for {waittime} seconds...")
 
                     loaded_deal['timestamp'] = timestamp
                     # reset padding so padding will be ready
@@ -467,7 +481,10 @@ def main():
                     waittime = random.randint(20, 30)
                     print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
                     time.sleep(waittime)
-                    driver.get('https://www.homedepot.com/')
+                    if random.randint(0, 1):
+                        driver.get('https://www.homedepot.com/')
+                    else:
+                        driver.get('https://www.google.com/')
                     waittime = random.randint(20, 30)
                     print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
                     time.sleep(waittime)

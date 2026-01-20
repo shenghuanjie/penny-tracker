@@ -1,21 +1,29 @@
 
     <html><head><style>
-        body { font-family: Arial; background: #f0f2f5; padding: 20px; }
-        table { width: 100%; border-collapse: collapse; background: white; }
-        th, td { padding: 10px; border: 1px solid #ddd; text-align: left; }
-        th { background: #f8991d; color: white; }
-        img { width: 70px; height: auto; border-radius: 5px; }
-        .clearance { color: #2ecc71; font-weight: bold; }
-        .penny_candidate { color: #f39c12; font-weight: bold; }
-        .penny { color: #3498db; }
-        .unchecked { color: #7f8c8d; font-style: italic; }
+        body { font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }
+        h2 { color: #333; }
+        table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; vertical-align: middle; }
+        th { background: #f96302; color: white; font-weight: bold; } /* Home Depot Orange */
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        img { width: 70px; height: auto; border-radius: 4px; object-fit: cover; }
+
+        /* Status Colors */
+        .penny { color: #3498db; font-weight: bold; }             /* Blue: Likely Penny */
+        .not_penny { color: #e74c3c; font-weight: bold; }         /* Red: Definite No */
+        .penny_candidate { color: #f39c12; font-weight: bold; }   /* Orange: Strong Maybe */
+        .clearance { color: #2ecc71; font-weight: bold; }         /* Green: Verified Clearance */
+        .error { color: #8e44ad; font-weight: bold; }             /* Purple: Code Exception */
+        .failure { color: #95a5a6; font-style: italic; }          /* Grey: Page Crash/Missing Data */
+        .blocked { color: #c0392b; font-weight: bold; text-decoration: underline; } /* Dark Red: Bot Detected */
+
     </style></head><body>
         <h2>Home Depot Clearance Report</h2>
         <table><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Link</th></tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/aa956254-8a1d-4162-a7f1-6c3ad39515b0/svn/husky-knife-sets-00143-64_300.jpg"></td>
             <td>Husky Husky 3pk Lock Back Utility Knife Set</td>
             <td>$11.90</td>
-            <td class="penny">PENNY</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Husky-Husky-3pk-Lock-Back-Utility-Knife-Set-00143/334457867?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/cc2330d3-3179-4cd1-85b7-9ba1cd29eb57/svn/dewalt-knife-sets-dwht10996-64_300.jpg"></td>
@@ -1071,337 +1079,337 @@
             <td><img src="https://images.thdstatic.com/productImages/33690cda-3e82-441d-8005-3d89c564c895/svn/white-roller-shades-uvbo7378w-64_300.jpg"></td>
             <td>None Cut to Size White Cordless Blackout Vinyl Roller Shade 73.25 in. W x 78 in. L</td>
             <td>$40.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Cut-to-Size-White-Cordless-Blackout-Vinyl-Roller-Shade-73-25-in-W-x-78-in-L-UVBO7378W/319875713?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/33690cda-3e82-441d-8005-3d89c564c895/svn/white-roller-shades-uvbo5578w-64_300.jpg"></td>
             <td>None Cut to Size White Cordless Blackout Vinyl Roller Shade 55.25 in. W x 78 in. L</td>
             <td>$28.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Cut-to-Size-White-Cordless-Blackout-Vinyl-Roller-Shade-55-25-in-W-x-78-in-L-UVBO5578W/319875621?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/33690cda-3e82-441d-8005-3d89c564c895/svn/white-roller-shades-uvbo3778w-64_300.jpg"></td>
             <td>None Cut to Size White Cordless Blackout Vinyl Roller Shade 37.25 in. W x 78 in. L</td>
             <td>$15.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Cut-to-Size-White-Cordless-Blackout-Vinyl-Roller-Shade-37-25-in-W-x-78-in-L-UVBO3778W/319875623?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/cf1c8c3f-5a28-4489-b32e-38159401f01a/svn/sandstone-coolaroo-outdoor-shades-508555-64_300.jpg"></td>
             <td>Coolaroo Sandstone Cordless 95% UV Block Fade Resistant Fabric with HeatShield Exterior Roller Shade 96 in. W x 84 in. L</td>
             <td>$34.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Coolaroo-Sandstone-Cordless-95-UV-Block-Fade-Resistant-Fabric-with-HeatShield-Exterior-Roller-Shade-96-in-W-x-84-in-L-508555/330430540?store=1861" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/d13579ff-75ff-4253-8e48-d8c49e32379e/svn/masterbuilt-electric-smokers-mb20070421-64_300.jpg"></td>
             <td>Masterbuilt 30 in. Digital Electric Smoker in Black</td>
             <td>$165.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Masterbuilt-30-in-Digital-Electric-Smoker-in-Black-MB20070421/316053714?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/47f482aa-ccbc-41d5-b979-02477bb675a6/svn/dyna-glo-propane-grills-dgh450crp-64_300.jpg"></td>
             <td>Dyna-Glo 4-Burner Propane Gas Grill in Matte Black with TriVantage Multifunctional Cooking System</td>
             <td>$117.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Dyna-Glo-4-Burner-Propane-Gas-Grill-in-Matte-Black-with-TriVantage-Multifunctional-Cooking-System-DGH450CRP/314031070?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/faf40940-b23b-41db-94bb-411193bd4015/svn/dyna-glo-propane-grills-dgh474crp-64_300.jpg"></td>
             <td>Dyna-Glo 5-Burner Propane Gas Grill in Matte Black with TriVantage Multifunctional Cooking System</td>
             <td>$149.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Dyna-Glo-5-Burner-Propane-Gas-Grill-in-Matte-Black-with-TriVantage-Multifunctional-Cooking-System-DGH474CRP/311050256?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/aa1b80d1-36cf-4f2d-8996-2f74a8f9a448/svn/anvil-locking-pliers-91609-64_300.jpg"></td>
             <td>Anvil 2-Piece Locking Pliers</td>
             <td>$4.90</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Anvil-2-Piece-Locking-Pliers-91609/333949146?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/f8e22322-1937-4ed9-b3d1-ebb6f7546896/svn/mrs-meyer-s-clean-day-all-purpose-cleaners-323595-64_300.jpg"></td>
             <td>Mrs. Meyer's Clean Day 16 oz. Iowa Pine Multi-Surface Everyday Cleaner</td>
             <td>$1.40</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Mrs-Meyer-s-Clean-Day-16-oz-Iowa-Pine-Multi-Surface-Everyday-Cleaner-323595/336911866?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/03569e68-2109-4c0c-ae3d-96c77d85cb2b/svn/mrs-meyer-s-clean-day-all-purpose-cleaners-323594-64_300.jpg"></td>
             <td>Mrs. Meyer's Clean Day 16 oz. Snow Drop Multi-Surface Everyday Cleaner</td>
             <td>$1.40</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Mrs-Meyer-s-Clean-Day-16-oz-Snow-Drop-Multi-Surface-Everyday-Cleaner-323594/336911865?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/4b98244a-982a-4222-9099-6a992a6c33ee/svn/pinalen-max-power-all-purpose-cleaners-2710-64_300.jpg"></td>
             <td>Pinalen Max Power 22 fl. oz. Summer Fresh Multi-Purpose Cleaner</td>
             <td>$0.40</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Pinalen-Max-Power-22-fl-oz-Summer-Fresh-Multi-Purpose-Cleaner-2710/310671838?store=1861" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/37a6e80e-5b95-48e3-ac36-a38c00685cf0/svn/white-thermacell-citronella-candles-torches-100525916-64_300.jpg"></td>
             <td>Thermacell Outdoor Mosquito Repeller Refill 120-Hour Mega Pack (30 Repellent Mats and 10 Butane Cartridges)</td>
             <td>$20.06</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Thermacell-Outdoor-Mosquito-Repeller-Refill-120-Hour-Mega-Pack-30-Repellent-Mats-and-10-Butane-Cartridges-100525916/309246284?store=6635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/26f29248-b7a4-47ef-9a75-cbcf2058f2fd/svn/black-thermacell-citronella-candles-torches-100546211-64_300.jpg"></td>
             <td>Thermacell Multi-Insect Outdoor Perimeter Repeller System 15 ft. Coverage and Deet Free (Pack of 2)</td>
             <td>$25.06</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Thermacell-Multi-Insect-Outdoor-Perimeter-Repeller-System-15-ft-Coverage-and-Deet-Free-Pack-of-2-100546211/318557457?store=1041" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/b77607fd-e87b-4693-b018-e3c533332efb/svn/off-citronella-candles-331881-64_300.jpg"></td>
             <td>OFF! 23 oz. Triple Wick Citronella Candle</td>
             <td>$1.30 – $6.49</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/OFF-23-oz-Triple-Wick-Citronella-Candle-331881/202529884?store=1009" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/358c121d-866f-46ce-b121-3d4aff7cd375/svn/off-citronella-candles-scj304447-64_300.jpg"></td>
             <td>OFF! Triple Wick Scented Citronella Candle, 23 oz., 1 CT, Backyard Outdoor Candle, Burn Time up to 50 Hours</td>
             <td>$1.30 – $6.49</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/OFF-Triple-Wick-Scented-Citronella-Candle-23-oz-1-CT-Backyard-Outdoor-Candle-Burn-Time-up-to-50-Hours-SCJ304447/203187960?store=1009" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/c1e8929e-b965-46b7-8dda-89c32b90f5e6/svn/trimaco-wallpaper-tools-11834a-64_300.jpg"></td>
             <td>TRIMACO 5/8 in. x 5/8 in. x 8 ft. Self-Stick Plastic Corner Guard-Residential</td>
             <td>$1.80 – $3.90</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/TRIMACO-5-8-in-x-5-8-in-x-8-ft-Self-Stick-Plastic-Corner-Guard-Residential-11834A/202061361?store=6635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/8b7b8599-b5cb-4892-aa61-9b321b1c8083/svn/painted-masonite-barn-doors-92269-64_300.jpg"></td>
             <td>Masonite 36 in. x 84 in. Full Lite Frosted Glass Black Finished Composite Sliding Barn Door with Hardware Kit</td>
             <td>$209.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Masonite-36-in-x-84-in-Full-Lite-Frosted-Glass-Black-Finished-Composite-Sliding-Barn-Door-with-Hardware-Kit-92269/321813654?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/297ae91f-f90a-4847-9d90-6f53bea9b37e/svn/finished-masonite-barn-doors-92276-64_300.jpg"></td>
             <td>Masonite 36 in. x 84 in. 3 Lite Frosted Glass White Finished Composite Sliding Barn Door with Hardware Kit</td>
             <td>$209.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Masonite-36-in-x-84-in-3-Lite-Frosted-Glass-White-Finished-Composite-Sliding-Barn-Door-with-Hardware-Kit-92276/321813655?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/abcaf8f7-8002-42de-a0df-76cc1273ff73/svn/primed-white-masonite-barn-doors-297530-64_300.jpg"></td>
             <td>Masonite Logan 36 in. x 84 in. 2 Panel Primed Composite Interior Sliding Barn Door with Hardware Kit</td>
             <td>$192.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Masonite-Logan-36-in-x-84-in-2-Panel-Primed-Composite-Interior-Sliding-Barn-Door-with-Hardware-Kit-297530/332279505?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/6ca97dfc-0ba9-464d-89cc-d0c5c68fcf68/svn/bronze-andersen-storm-doors-95953-64_300.jpg"></td>
             <td>Andersen 300 Series 36 in. x 80 in. Bronze Universal 3/4 Light Mid-View Aluminum Storm Door with Black Handle Set</td>
             <td>$151.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Andersen-300-Series-36-in-x-80-in-Bronze-Universal-3-4-Light-Mid-View-Aluminum-Storm-Door-with-Black-Handle-Set-95953/325578583?store=642" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/5767d23f-c5da-40fb-97b2-6ee5406c2f38/svn/tzumi-projectors-30469hd-64_300.jpg"></td>
             <td>Tzumi 1280 x 720 HD Movie Projector with Stand 360 Lumens</td>
             <td>$18.00 – $39.88</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Tzumi-1280-x-720-HD-Movie-Projector-with-Stand-360-Lumens-30469HD/336264565?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/d607c06f-c105-4a7a-84a8-f77c031cae66/svn/black-ilive-portable-audio-video-isb184b-64_300.jpg"></td>
             <td>iLive 18 in. Portable Wireless Multimedia Soundbar Speaker with LED Lights, Rechargeable Battery, Black</td>
             <td>$11.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/iLive-18-in-Portable-Wireless-Multimedia-Soundbar-Speaker-with-LED-Lights-Rechargeable-Battery-Black-ISB184B/333870321?store=6621" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/1fb84e62-6d53-4421-b79c-42fe542d7c36/svn/pearl-gray-glacier-bay-linen-cabinets-dr12p2-pg-64_300.jpg"></td>
             <td>Glacier Bay Delridge 12 in. W x 14.5 in. D x 29 in. H Pearl Gray Linen Cabinet</td>
             <td>$77.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Glacier-Bay-Delridge-12-in-W-x-14-5-in-D-x-29-in-H-Pearl-Gray-Linen-Cabinet-DR12P2-PG/310163642?store=1861" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/d6f5e177-7618-4802-a648-0b64ae8da60b/svn/milwaukee-impact-socket-sets-49-66-7012-64_300.jpg"></td>
             <td>Milwaukee SHOCKWAVE 1/2 in. Drive SAE 6 Point Impact Socket Set (19-Piece)</td>
             <td>$89.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Milwaukee-SHOCKWAVE-1-2-in-Drive-SAE-6-Point-Impact-Socket-Set-19-Piece-49-66-7012/316469437?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/7da4e1a7-1323-45f8-870b-00e50a67c3c4/svn/anvil-adjustable-wrenches-91608-64_300.jpg"></td>
             <td>Anvil 2-Piece Adjustable Wrench Set</td>
             <td>$4.90</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Anvil-2-Piece-Adjustable-Wrench-Set-91608/333949155?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/698993f9-b0b2-4231-bfc3-c357666064df/svn/anvil-plier-sets-91607-64_300.jpg"></td>
             <td>Anvil 3-Piece Pliers Set</td>
             <td>$4.90</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Anvil-3-Piece-Pliers-Set-91607/333949159?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/eeaeef97-15a7-40d7-b4d5-b326d47a7143/svn/anvil-knife-sets-91606-64_300.jpg"></td>
             <td>Anvil 4-Pack Snap Off Utility Knife Set</td>
             <td>$2.20</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Anvil-4-Pack-Snap-Off-Utility-Knife-Set-91606/333949153?store=642" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/e5fb951b-6c93-4e09-813a-770819967b12/svn/titebond-specialty-construction-adhesive-7292-64_300.jpg"></td>
             <td>Titebond 28 oz. Contractor Grade Drywall Adhesive</td>
             <td>$3.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Titebond-28-oz-Contractor-Grade-Drywall-Adhesive-7292/203745547?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/5cb0c629-75ef-4308-beb3-842c08c31493/svn/tan-raised-planter-boxes-3053453-64_300.jpg"></td>
             <td>None Cinch Smart Garden 24 in. x 24 in. x 12 in. Tan Composite with Galvanized Steel Raised Garden Bed</td>
             <td>$20.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Cinch-Smart-Garden-24-in-x-24-in-x-12-in-Tan-Composite-with-Galvanized-Steel-Raised-Garden-Bed-3053453/316700642?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/6ec93a48-5b0c-467e-820e-43c91b6fb1c0/svn/brown-vigoro-elevated-garden-beds-999-2201-64_300.jpg"></td>
             <td>Vigoro 44.5 in. W x 15.25 in. H Easy Grow Elevated Resin Garden Bed Large</td>
             <td>$23.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Vigoro-44-5-in-W-x-15-25-in-H-Easy-Grow-Elevated-Resin-Garden-Bed-Large-999-2201/317886559?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/36e0211a-2556-47a8-9bdd-5f6bbe3c8e4f/svn/grey-raised-planter-boxes-3053446-64_300.jpg"></td>
             <td>None Cinch Smart Garden 48 in. x 24 in. x 12 in. Grey Composite with Galvanized Steel Raised Garden Bed</td>
             <td>$25.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Cinch-Smart-Garden-48-in-x-24-in-x-12-in-Grey-Composite-with-Galvanized-Steel-Raised-Garden-Bed-3053446/316700626?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/bd286a16-0259-4a7c-9759-66ce3ac62bdc/svn/gray-frame-it-all-raised-planter-boxes-900017901-gray-64_300.jpg"></td>
             <td>Frame It All 9-in-1 Modular Metal Raised Garden Bed Kit</td>
             <td>$33.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Frame-It-All-9-in-1-Modular-Metal-Raised-Garden-Bed-Kit-900017901-Gray/322530471?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/fe326c55-1571-46d0-bfb1-d70484eccf32/svn/foggy-grey-vigoro-plant-pots-dp1717t-sgr-64_300.jpg"></td>
             <td>Vigoro 6.5 in. Hayward Small Foggy Gray Plastic Planter (6.5 in. D x 5.7 in. H)</td>
             <td>$1.74</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny_candidate">PENNY_CANDIDATE</td>
             <td><a href="https://www.homedepot.com/p/Vigoro-6-5-in-Hayward-Small-Foggy-Gray-Plastic-Planter-6-5-in-D-x-5-7-in-H-DP1717T-SGR/314099264?store=1861" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/7e2a7470-250a-4c62-9780-4d78b776c6b7/svn/nero-gray-vigoro-plant-pots-57330-64_300.jpg"></td>
             <td>Vigoro 11.8 in. x 11.8 in. D x 9.4 in. H Davina Medium Nero Gray Resin Pot</td>
             <td>$7.49 – $7.50</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Vigoro-11-8-in-x-11-8-in-D-x-9-4-in-H-Davina-Medium-Nero-Gray-Resin-Pot-57330/321209778?store=1009" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/8ae66b0d-aece-4498-8aa5-160b395a803f/svn/grey-vigoro-plant-pots-cr01721s-06h-64_300.jpg"></td>
             <td>Vigoro 6 in. Piedmont Small Gray Ceramic Planter (6 in. D x 5.7 in. H) with Drainage Hole and Attached Saucer</td>
             <td>$3.20</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Vigoro-6-in-Piedmont-Small-Gray-Ceramic-Planter-6-in-D-x-5-7-in-H-with-Drainage-Hole-and-Attached-Saucer-CR01721S-06H/314647824?store=1017" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/6875c137-a32e-4ce6-8c2b-2ca37c3be16a/svn/sleek-socket-power-strips-8-2xdown-ovsz-w-64_300.jpg"></td>
             <td>Sleek Socket Two 8 ft. Ultra-Thin Electrical Outlet Cover with Side-by-Side 3-Outlet Power Strips and Cord Management Kit</td>
             <td>$11.90</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Sleek-Socket-Two-8-ft-Ultra-Thin-Electrical-Outlet-Cover-with-Side-by-Side-3-Outlet-Power-Strips-and-Cord-Management-Kit-8-2XDOWN-OVSZ-W/319023307?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/4211ed46-9c9d-4b4e-8285-fbf2f9a132c2/svn/hdx-general-purpose-cords-hwhdt16212-64_300.jpg"></td>
             <td>HDX 12ft. 16/2 Light Duty Indoor Multi-Outlet Extension Cord with Twin Ends, White</td>
             <td>$5.30</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/HDX-12ft-16-2-Light-Duty-Indoor-Multi-Outlet-Extension-Cord-with-Twin-Ends-White-HWHDT16212/323926515?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/fd280527-11f0-4fef-b02c-c8f3919bd47e/svn/sleek-socket-general-purpose-cords-9-m-ovsz-w-64_300.jpg"></td>
             <td>Sleek Socket 8 ft. 3-Outlet Cord and Plug Concealer with Cord Management Kit</td>
             <td>$9.50</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Sleek-Socket-8-ft-3-Outlet-Cord-and-Plug-Concealer-with-Cord-Management-Kit-9-M-OVSZ-W/318017505?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/84150bbe-22ed-4e49-861a-43d91613143e/svn/whites-architectural-mailboxes-post-mount-mailboxes-e1600wam-64_300.jpg"></td>
             <td>Architectural Mailboxes Elite White, Large, Steel, Post Mount Mailbox</td>
             <td>$8.80</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Architectural-Mailboxes-Elite-White-Large-Steel-Post-Mount-Mailbox-E1600WAM/322384205?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/cdf610e4-edfa-44a1-8428-89a8aaa5c8d7/svn/blacks-architectural-mailboxes-post-mount-mailboxes-e1600bam-64_300.jpg"></td>
             <td>Architectural Mailboxes Elite Black, Large, Steel, Post Mount Mailbox</td>
             <td>$8.80</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Architectural-Mailboxes-Elite-Black-Large-Steel-Post-Mount-Mailbox-E1600BAM/322384204?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/2faad0f3-257e-5e49-b619-dddac7a12e59/svn/architectural-mailboxes-mailbox-posts-stands-7511b-10-64_300.jpg"></td>
             <td>Architectural Mailboxes Coolidge 2 in. Dia In-Ground Steel Mailbox Post Black</td>
             <td>$6.70</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Architectural-Mailboxes-Coolidge-2-in-Dia-In-Ground-Steel-Mailbox-Post-Black-7511B-10/300118153?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/6cf1adc6-fac8-4503-93da-f1292225704e/svn/milwaukee-oscillating-tool-attachments-49-10-9208-64_300.jpg"></td>
             <td>Milwaukee Oscillating Multi-Tool Blade Set (8-Piece)</td>
             <td>$35.89</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Milwaukee-Oscillating-Multi-Tool-Blade-Set-8-Piece-49-10-9208/325633421?store=6672" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/f4688d0a-3e02-428e-ade3-d29d4fa10a80/svn/milwaukee-oscillating-tool-attachments-49-25-1140-64_300.jpg"></td>
             <td>Milwaukee OPEN-LOK Variety Oscillating Blade Set w/ Japanese Hardwood Blade (5-Piece)</td>
             <td>$15.90</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Milwaukee-OPEN-LOK-Variety-Oscillating-Blade-Set-w-Japanese-Hardwood-Blade-5-Piece-49-25-1140/335886584?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/a15c08ee-5850-421f-a1d2-423c173f1826/svn/nexgrill-grill-brushes-530-0024n-64_300.jpg"></td>
             <td>Nexgrill Grill Cleaning Brush with Steam</td>
             <td>$3.80 – $8.24</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Nexgrill-Grill-Cleaning-Brush-with-Steam-530-0024N/321418819?store=6621" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/3cf37017-5ffd-4fe8-83ba-a2929b93d747/svn/white-lutron-dimmers-tgcl-153p-wh-2-64_300.jpg"></td>
             <td>Lutron Toggler LED+ Dimmer Switch for Dimmable LED Bulbs, 150W LED/Single-Pole or 3-Way, White (TGCL-153P-WH-2) (2-Pack)</td>
             <td>$9.30 – $19.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Lutron-Toggler-LED-Dimmer-Switch-for-Dimmable-LED-Bulbs-150W-LED-Single-Pole-or-3-Way-White-TGCL-153P-WH-2-2-Pack-TGCL-153P-WH-2/319958498?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/e762d065-db2e-4225-9a99-859086217c2e/svn/milwaukee-drill-bit-combination-sets-48-32-5157-64_300.jpg"></td>
             <td>Milwaukee SHOCKWAVE Impact Duty Alloy Steel Driver Bit Set with PACKOUT Case (90-Piece)</td>
             <td>$44.89</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Milwaukee-SHOCKWAVE-Impact-Duty-Alloy-Steel-Driver-Bit-Set-with-PACKOUT-Case-90-Piece-48-32-5157/325632608?store=1861" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/013af3b0-1b9e-4f8d-9223-86f72f7223c2/svn/matte-black-american-standard-centerset-bathroom-faucets-7417201-243-64_300.jpg"></td>
             <td>American Standard Rumson 4 in. Centerset 2-Handle Bathroom Faucet in Matte Black</td>
             <td>$41.31</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/American-Standard-Rumson-4-in-Centerset-2-Handle-Bathroom-Faucet-in-Matte-Black-7417201-243/313360175?store=6621" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/4130201f-11f5-4ec6-abe3-f0fcf8c00e05/svn/glossy-ivory-vigoro-plant-pots-dp1471t-dps1471-64_300.jpg"></td>
             <td>Vigoro 6 in. Adeline Small Ivory Recycled Plastic Planter (6 in. D x 4.5 in. H) with Attached Saucer</td>
             <td>$1.74</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Vigoro-6-in-Adeline-Small-Ivory-Recycled-Plastic-Planter-6-in-D-x-4-5-in-H-with-Attached-Saucer-DP1471T-DPS1471/314276467?store=1009" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/5a0d29bb-190e-463c-8d5c-ed9d01a4174a/svn/safety-1st-child-proof-safety-locks-latches-hs187-64_300.jpg"></td>
             <td>Safety 1st Refrigerator Decor Door Lock</td>
             <td>$2.30 – $5.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Safety-1st-Refrigerator-Decor-Door-Lock-HS187/203754425?store=1041" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/c34fd4c5-11af-45a4-8c8a-2a5961046d63/svn/safety-1st-child-proof-safety-locks-latches-hs271-64_300.jpg"></td>
             <td>Safety 1st OutSmart Flex Lock</td>
             <td>$2.50</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Safety-1st-OutSmart-Flex-Lock-HS271/312486618?store=1041" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/d8bf43e9-cba5-4f0d-bc0e-e57c3ade3080/svn/black-ninja-countertop-blenders-bc151bk-64_300.jpg"></td>
             <td>NINJA Blast 18 oz. Single Speed Portable Blender for Shakes & Smoothies, BPA Free, Rechargable, Dishwasher Safe Parts in Black</td>
             <td>$29.00</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/NINJA-Blast-18-oz-Single-Speed-Portable-Blender-for-Shakes-Smoothies-BPA-Free-Rechargable-Dishwasher-Safe-Parts-in-Black-BC151BK/325730824?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/dadd50b9-23c8-467f-9b7d-bc78e0bb56d7/svn/sky-rider-drones-drw331w-64_300.jpg"></td>
             <td>SKY RIDER Pro Quadcopter Drone with Wi-Fi Camera, Remote and Phone Holder, White</td>
             <td>$19.88</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny_candidate">PENNY_CANDIDATE</td>
             <td><a href="https://www.homedepot.com/p/SKY-RIDER-Pro-Quadcopter-Drone-with-Wi-Fi-Camera-Remote-and-Phone-Holder-White-DRW331W/330541632?store=6635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/b32bf4d1-63da-4099-a706-a917f153ed20/svn/everbilt-housewrap-100000040740-64_300.jpg"></td>
             <td>Everbilt 9 ft. x 150 ft. Non-Woven Housewrap</td>
             <td>$80.02</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/Everbilt-9-ft-x-150-ft-Non-Woven-Housewrap-100000040740/306712963?store=6635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/1d502cb1-e5de-45a6-8e3c-af680822ba8f/svn/rejuvenate-wood-cleaners-hg-r61600m-64_300.jpg"></td>
             <td>Rejuvenate 16 oz. Cabinet and Furniture Restorer and Protectant</td>
             <td>$1.80</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Rejuvenate-16-oz-Cabinet-and-Furniture-Restorer-and-Protectant-HG-R61600M/100281460?store=6636" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/f8b1e272-0f96-40bc-85de-98dfea8d7ec7/svn/ridgid-brad-nailers-r09891k-64_300.jpg"></td>
             <td>RIDGID 18V Brushless Cordless 18-Gauge 2-1/8 in. Brad Nailer with CLEAN DRIVE Technology with 2.0 Ah Battery and Charger</td>
             <td>$161.10</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="clearance">CLEARANCE</td>
             <td><a href="https://www.homedepot.com/p/RIDGID-18V-Brushless-Cordless-18-Gauge-2-1-8-in-Brad-Nailer-with-CLEAN-DRIVE-Technology-with-2-0-Ah-Battery-and-Charger-R09891K/316879178?store=6635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/c4d2caa2-9979-4ec1-9c9b-2cd55ae15e60/svn/grip-rite-j-l-bolts-1210hgab1-64_300.jpg"></td>
             <td>Grip-Rite 1/2 in. x 10 in. Hot-Galvanized Anchor Bolt</td>
             <td>$1.10</td>
-            <td class="unchecked">UNCHECKED</td>
+            <td class="penny">PENNY</td>
             <td><a href="https://www.homedepot.com/p/Grip-Rite-1-2-in-x-10-in-Hot-Galvanized-Anchor-Bolt-1210HGAB1/202090704?store=635" target="_blank">Link</a></td>
         </tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/97619c61-64de-4f2e-bace-b0d4b43d566b/svn/globe-electric-decorative-light-bulbs-35687-64_300.jpg"></td>
