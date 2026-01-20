@@ -68,3 +68,7 @@ cookie.txt
 
 # skip profile
 hd_profile/*
+
+# skip data files
+*.tsv
+*.csv
