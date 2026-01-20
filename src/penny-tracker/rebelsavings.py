@@ -251,6 +251,9 @@ def main():
     parser.add_argument("-ns", "--no-search", action="store_true",
                         help="Do NOT search for new items.")
 
+    parser.add_argument("-rp", "--report-only", action="store_true",
+                        help="Only generate report.")
+
     args = parser.parse_args()
 
     # Ensure output directory exists
@@ -282,180 +285,185 @@ def main():
 
         print(f"Loaded {len(deal_list)} items.")
 
-    options = uc.ChromeOptions()
-    # Force version 138 to match your browser
-    driver = uc.Chrome(options=options, version_main=138)
-    # --- MODE: SCRAPE AND VERIFY ---
-    try:
-        if deal_list:
-            seen_ids = set(deal['name'] for deal in deal_list)
-        else:
-            seen_ids = set()
-        max_items = args.max_items  # Use the argument
-        if max_items is None:
-            max_items = float('inf')
-        patience = 0
-
-        print(f"Starting item collection (Max: {max_items})...")
-
-        if not args.no_search and deal_list:
-
-            driver.get("https://www.rebelsavings.com/")
-            navigate_ca_filters(driver)
-
-            # Help the virtual scroll by zooming out
-            driver.execute_script("document.body.style.zoom='75%'")
-
-            # Save results to the specified output folder
-            if os.path.isfile(tsv_output_path):
-                open_mode = 'a'
+    if not args.report_only:
+        options = uc.ChromeOptions()
+        # Force version 138 to match your browser
+        driver = uc.Chrome(options=options, version_main=138)
+        # --- MODE: SCRAPE AND VERIFY ---
+        try:
+            if deal_list:
+                seen_ids = set(deal['name'] for deal in deal_list)
             else:
-                open_mode = 'w'
+                seen_ids = set()
+            max_items = args.max_items  # Use the argument
+            if max_items is None:
+                max_items = float('inf')
+            patience = 0
 
-            with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
-                if open_mode == "w":
-                    print('\t'.join(FIELDNAMES), file=f_out)
+            print(f"Starting item collection (Max: {max_items})...")
 
-                while len(deal_list) < max_items:
-                    rows = driver.find_elements(By.CLASS_NAME, "summary-row")
-                    initial_count = len(seen_ids)
+            if not args.no_search and deal_list:
 
-                    for i in range(len(rows)):
-                        if len(deal_list) >= max_items: break
+                driver.get("https://www.rebelsavings.com/")
+                navigate_ca_filters(driver)
 
-                        current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
-                        if i >= len(current_rows): break
-                        row = current_rows[i]
+                # Help the virtual scroll by zooming out
+                driver.execute_script("document.body.style.zoom='75%'")
 
-                        try:
-                            name = row.find_element(
-                                By.CLASS_NAME, "title-column").text.splitlines()[0].strip()
-                            price = row.find_element(By.XPATH, "./td[3]").text.strip()
-                            item_id = name
+                # Save results to the specified output folder
+                if os.path.isfile(tsv_output_path):
+                    open_mode = 'a'
+                else:
+                    open_mode = 'w'
 
-                            if item_id in seen_ids:
-                                if args.continuing:
-                                    continue
-                                else:
-                                    print(f'Duplicate item found: {item_id}. '
-                                          'Terminating the search.')
-                                    max_items = -1
+                with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
+                    if open_mode == "w":
+                        print('\t'.join(FIELDNAMES), file=f_out)
 
-                            img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
+                    while len(deal_list) < max_items:
+                        rows = driver.find_elements(By.CLASS_NAME, "summary-row")
+                        initial_count = len(seen_ids)
 
-                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});",
-                                                  row)
-                            time.sleep(3)
-                            driver.execute_script("arguments[0].click();", row)
+                        for i in range(len(rows)):
+                            if len(deal_list) >= max_items: break
 
-                            hd_link_elem = WebDriverWait(driver, 8).until(
-                                EC.presence_of_element_located((By.XPATH, "//a[@target='_blank']"))
-                            )
-                            hd_url = hd_link_elem.get_attribute("href")
-                            time.sleep(2)
+                            current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
+                            if i >= len(current_rows): break
+                            row = current_rows[i]
 
-                            driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
-                            WebDriverWait(driver, 5).until(
-                                EC.invisibility_of_element_located(
-                                    (By.CLASS_NAME, "close-menu-btn")))
-
-                            # Note: hd_status is initially empty/None, filled later
-                            current_deal = {
-                                "name": name,
-                                "price": price,
-                                "url": hd_url,
-                                "image": img_url,
-                                "hd_status": "",
-                                "timestamp": "",
-                                "padding": ""
-                            }
-                            # write info
-                            print(pad_row(current_deal), file=f_out)
-                            deal_list.append(current_deal)
-                            seen_ids.add(item_id)
-                            print(f"[{len(deal_list)}] Collected: {name[:35]}...")
-                            time.sleep(3)
-
-                        except Exception as e:
                             try:
+                                name = row.find_element(
+                                    By.CLASS_NAME, "title-column").text.splitlines()[0].strip()
+                                price = row.find_element(By.XPATH, "./td[3]").text.strip()
+                                item_id = name
+
+                                if item_id in seen_ids:
+                                    if args.continuing:
+                                        continue
+                                    else:
+                                        print(f'Duplicate item found: {item_id}. '
+                                              'Terminating the search.')
+                                        max_items = -1
+
+                                img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
+
+                                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});",
+                                                      row)
+                                time.sleep(3)
+                                driver.execute_script("arguments[0].click();", row)
+
+                                hd_link_elem = WebDriverWait(driver, 8).until(
+                                    EC.presence_of_element_located((By.XPATH, "//a[@target='_blank']"))
+                                )
+                                hd_url = hd_link_elem.get_attribute("href")
+                                time.sleep(2)
+
                                 driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
-                            except:
-                                pass
-                            time.sleep(10)
-                            continue
+                                WebDriverWait(driver, 5).until(
+                                    EC.invisibility_of_element_located(
+                                        (By.CLASS_NAME, "close-menu-btn")))
 
-                    if len(seen_ids) == initial_count:
-                        patience += 1
-                        if patience >= 3: break
-                    else:
-                        patience = 0
+                                # Note: hd_status is initially empty/None, filled later
+                                current_deal = {
+                                    "name": name,
+                                    "price": price,
+                                    "url": hd_url,
+                                    "image": img_url,
+                                    "hd_status": "",
+                                    "timestamp": "",
+                                    "padding": ""
+                                }
+                                # write info
+                                print(pad_row(current_deal), file=f_out)
+                                deal_list.append(current_deal)
+                                seen_ids.add(item_id)
+                                print(f"[{len(deal_list)}] Collected: {name[:35]}...")
+                                time.sleep(3)
 
-                    driver.execute_script("window.scrollBy(0, 800);")
-                    time.sleep(2)
-        # Verification & HTML Report
-        print(f"\nVerifying {len(deal_list)} items on Home Depot...")
-        fp = open(tsv_output_path, 'r+', encoding="utf-8")
-        fp.readline()
-        file_pointer = fp.tell()
-        # now we should align deal_list with actual line
-        for ideal, loaded_deal in enumerate(deal_list):
-            print(f"[{ideal}] {loaded_deal['name']} at {file_pointer}...")
-            loaded_deal = dict(loaded_deal)
-            if fp.closed:
-                fp = open(tsv_output_path, 'r+', encoding="utf-8")
-                fp.seek(file_pointer)
-            else:
-                fp.seek(file_pointer)
-            file_deal = dict(zip(FIELDNAMES, fp.readline().strip().split('\t')[:len(FIELDNAMES)]))
-            if loaded_deal['name'] != file_deal['name']:
-                print(ideal)
-                import pdb
-                pdb.set_trace()
-                break
-            org_timestamp = loaded_deal.get("timestamp", None)
-            timestamp = datetime.datetime.fromtimestamp(
-                time.time()).strftime(TIMESTAMP_FORMAT)
-            if not org_timestamp or not is_within_one_day(org_timestamp, timestamp):
-                while True:
-                    loaded_deal['hd_status'] = verify_on_home_depot(driver, loaded_deal)
-                    if loaded_deal['hd_status'] not in {
-                        HDStatus.FAILURE, HDStatus.ERROR, HDStatus.BLOCKED}:
-                        break
-                    else:
-                        waittime = random.randint(120, 360)
-                        time.sleep(waittime)
-                        print(f"Blocked. Waiting for {waittime} seconds...")
+                            except Exception as e:
+                                try:
+                                    driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
+                                except:
+                                    pass
+                                time.sleep(10)
+                                continue
 
-                loaded_deal['timestamp'] = timestamp
-                # reset padding so padding will be ready
-                loaded_deal['padding'] = ''
-                fp.seek(file_pointer)
-                padded_line = pad_row(loaded_deal)
-                print(f'Writing to file...\n{padded_line}')
-                print(padded_line, file=fp)
-                # ok now we have a new file pointer position
-                file_pointer = fp.tell()
-                fp.close()
-                # Optional: You could update the CSV here row by row if desired,
-                # but currently we just generate the HTML at the end.
-                waittime = random.randint(20, 30)
-                print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
-                time.sleep(waittime)
-                driver.get('https://www.homedepot.com/')
-                waittime = random.randint(20, 30)
-                print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
-                time.sleep(waittime)
-                if ideal % 20 == 0:
-                    waittime = random.randint(30, 60)
+                        if len(seen_ids) == initial_count:
+                            patience += 1
+                            if patience >= 3: break
+                        else:
+                            patience = 0
+
+                        driver.execute_script("window.scrollBy(0, 800);")
+                        time.sleep(2)
+            # Verification & HTML Report
+            print(f"\nVerifying {len(deal_list)} items on Home Depot...")
+            fp = open(tsv_output_path, 'r+', encoding="utf-8")
+            fp.readline()
+            file_pointer = fp.tell()
+            # now we should align deal_list with actual line
+            for ideal, loaded_deal in enumerate(deal_list):
+                print(f"[{ideal}] {loaded_deal['name']} at {file_pointer}...")
+                loaded_deal = dict(loaded_deal)
+                if fp.closed:
+                    fp = open(tsv_output_path, 'r+', encoding="utf-8")
+                    fp.seek(file_pointer)
+                else:
+                    fp.seek(file_pointer)
+                file_deal = dict(zip(FIELDNAMES, fp.readline().strip().split('\t')[:len(FIELDNAMES)]))
+                if loaded_deal['name'] != file_deal['name']:
+                    print(ideal)
+                    import pdb
+                    pdb.set_trace()
+                    break
+                org_timestamp = loaded_deal.get("timestamp", None)
+                timestamp = datetime.datetime.fromtimestamp(
+                    time.time()).strftime(TIMESTAMP_FORMAT)
+                if not org_timestamp or not is_within_one_day(org_timestamp, timestamp):
+                    while True:
+                        loaded_deal['hd_status'] = verify_on_home_depot(driver, loaded_deal)
+                        if loaded_deal['hd_status'] not in {
+                            HDStatus.FAILURE, HDStatus.ERROR, HDStatus.BLOCKED}:
+                            break
+                        else:
+
+                            waittime = random.randint(120, 360)
+                            time.sleep(waittime)
+                            print(f"Blocked. Waiting for {waittime} seconds...")
+
+                    loaded_deal['timestamp'] = timestamp
+                    # reset padding so padding will be ready
+                    loaded_deal['padding'] = ''
+                    fp.seek(file_pointer)
+                    padded_line = pad_row(loaded_deal)
+                    print(f'Writing to file...\n{padded_line}')
+                    print(padded_line, file=fp)
+                    # ok now we have a new file pointer position
+                    file_pointer = fp.tell()
+                    fp.close()
+                    # Optional: You could update the CSV here row by row if desired,
+                    # but currently we just generate the HTML at the end.
+                    waittime = random.randint(20, 30)
+                    print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
                     time.sleep(waittime)
-                    print(f"[{ideal} of {len(deal_list)}] "
-                          f"Waiting for {waittime} seconds...")
-            else:
-                # no need to update status, switch to a new line
-                # but there is no need to reopen file
-                file_pointer = fp.tell()
-    finally:
-        driver.quit()
+                    driver.get('https://www.homedepot.com/')
+                    waittime = random.randint(20, 30)
+                    print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
+                    time.sleep(waittime)
+                    if ideal % 20 == 0:
+                        waittime = random.randint(30, 60)
+                        time.sleep(waittime)
+                        print(f"[{ideal} of {len(deal_list)}] "
+                              f"Waiting for {waittime} seconds...")
+                else:
+                    # no need to update status, switch to a new line
+                    # but there is no need to reopen file
+                    file_pointer = fp.tell()
+        finally:
+            driver.quit()
+            print("Scraping complete. Saving report...")
+            generate_html_report(deal_list, report_path)
+    else:
         print("Scraping complete. Saving report...")
         generate_html_report(deal_list, report_path)
 
