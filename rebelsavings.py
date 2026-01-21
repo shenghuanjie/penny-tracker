@@ -116,7 +116,7 @@ def navigate_ca_filters(driver):
     city_btn = wait.until(
         EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'All Cities')]")))
     city_btn.click()
-    cities = ["Campbell", "Fremont", "Hayward", "Milpitas", "San Jose", "Union City"]
+    cities = ["Campbell", "Fremont", "Hayward", "Milpitas", "San Jose", "Sunnyvale", "Union City"]
     for city in cities:
         try:
             city_label = wait.until(
