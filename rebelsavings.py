@@ -1,5 +1,5 @@
 import datetime
-import io
+import shutil
 import time
 import os
 import argparse
@@ -13,9 +13,21 @@ from selenium.webdriver.support import expected_conditions as EC
 
 TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 ROW_SIZE = 1000  # Target bytes per line
-FIELDNAMES = ["name", "price", "url", "image", "hd_status", "timestamp", "padding"]
+FIELDNAMES = ["name", "price", "url", "image", "original_timestamp", "hd_status",
+              "updated_at", "padding"]
 NEWLINE = '\n'
 TSV_FILENAME = "rebel_final_report.tsv"
+BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
+
+
+class RunningMode:
+    # clean up TSV by removing old entries
+    CLEAN = 'clean'
+    SEARCH = 'search'
+    CHECK = 'check'
+    REPORT = 'report'
+    # clean followed by search, check, and report
+    ALL = 'all'
 
 
 class HDStatus:
@@ -79,7 +91,7 @@ def generate_html_report(deals, output_path):
     print(f"\nVisual report created: {output_path}")
 
 
-def is_within_one_day(timestamp1, timestamp2):
+def is_within_x_days(timestamp1, timestamp2, days=3):
     """
     Checks if two timestamp strings are within 24 hours of each other.
     Format: '%Y-%m-%d %H:%M:%S'
@@ -94,7 +106,7 @@ def is_within_one_day(timestamp1, timestamp2):
         diff = abs(d1 - d2)
 
         # Check if difference is less than or equal to 1 day
-        return diff <= datetime.timedelta(days=1)
+        return diff <= datetime.timedelta(days=days)
     except ValueError:
         return False
 
@@ -265,7 +277,7 @@ def main():
     parser = argparse.ArgumentParser(description="RebelSavings Scraper & Reporter")
 
     # 1. Max Items
-    parser.add_argument("-m", "--max-items", type=int, default=None,
+    parser.add_argument("-n", "--max-items", type=int, default=None,
                         help="Maximum number of items to scrape (default: None)")
 
     # 2. Read CSV Only
@@ -278,14 +290,11 @@ def main():
     parser.add_argument("-o", "--output-dir", type=str, default=".",
                         help="Folder to save the CSV and HTML report (default: current directory)")
 
-    parser.add_argument("-c", "--continuing", action="store_true",
-                        help="Continue searching for items even if one found in the CSV.")
-
-    parser.add_argument("-ns", "--no-search", action="store_true",
-                        help="Do NOT search for new items.")
-
-    parser.add_argument("-rp", "--report-only", action="store_true",
-                        help="Only generate report.")
+    parser.add_argument("-m", "--mode", choices=[
+                        RunningMode.CLEAN, RunningMode.CHECK,
+                        RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL],
+                        default=RunningMode.ALL,
+                        help="Running mode.")
 
     args = parser.parse_args()
 
@@ -302,6 +311,7 @@ def main():
 
     report_path = os.path.join(args.output_dir, html_filename)
     tsv_output_path = os.path.join(args.output_dir, TSV_FILENAME)
+    backuptsv_output_path = os.path.join(args.output_dir, BACKUP_TSV_FILENAME)
 
     # --- MODE: REPORT ONLY ---
     if args.from_tsv and os.path.isfile(args.from_tsv):
@@ -318,7 +328,22 @@ def main():
 
         print(f"Loaded {len(deal_list)} items.")
 
-    if not args.report_only:
+    if args.mode in [RunningMode.CLEAN, RunningMode.ALL] and deal_list:
+        new_deal_list = []
+        for deal_row in deal_list:
+            org_timestamp = deal_row["original_timestamp"]
+            timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
+            if org_timestamp is None or is_within_x_days(org_timestamp, timestamp, days=60):
+                new_deal_list.append(deal_row)
+        if new_deal_list != deal_list:
+            shutil.copyfile(args.from_tsv, backuptsv_output_path)
+            with open(tsv_output_path, 'w', encoding="utf-8") as fp:
+                print(pad_row(FIELDNAMES), file=fp)
+                for deal_row in new_deal_list:
+                    padded_line = pad_row(deal_row)
+                    print(padded_line, file=fp)
+
+    if args.mode in [RunningMode.SEARCH, RunningMode.CHECK, RunningMode.ALL]:
         driver = get_driver()
         # --- MODE: SCRAPE AND VERIFY ---
         try:
@@ -333,7 +358,7 @@ def main():
 
             print(f"Starting item collection (Max: {max_items})...")
 
-            if not args.no_search and deal_list:
+            if args.mode in [RunningMode.SEARCH, RunningMode.ALL] and deal_list:
 
                 driver.get("https://www.rebelsavings.com/")
                 navigate_ca_filters(driver)
@@ -349,7 +374,7 @@ def main():
 
                 with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
                     if open_mode == "w":
-                        print('\t'.join(FIELDNAMES), file=f_out)
+                        print(pad_row(FIELDNAMES), file=f_out)
 
                     while len(deal_list) < max_items:
                         rows = driver.find_elements(By.CLASS_NAME, "summary-row")
@@ -369,12 +394,9 @@ def main():
                                 item_id = name
 
                                 if item_id in seen_ids:
-                                    if args.continuing:
-                                        continue
-                                    else:
-                                        print(f'Duplicate item found: {item_id}. '
-                                              'Terminating the search.')
-                                        max_items = -1
+                                    print(f'Duplicate item found: {item_id}. '
+                                          'Continuing the search.')
+                                    continue
 
                                 img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
 
@@ -394,14 +416,17 @@ def main():
                                     EC.invisibility_of_element_located(
                                         (By.CLASS_NAME, "close-menu-btn")))
 
+                                original_timestamp = datetime.datetime.fromtimestamp(
+                                    time.time()).strftime(TIMESTAMP_FORMAT)
                                 # Note: hd_status is initially empty/None, filled later
                                 current_deal = {
                                     "name": name,
                                     "price": price,
                                     "url": hd_url,
                                     "image": img_url,
+                                    "original_timestamp": original_timestamp,
                                     "hd_status": "",
-                                    "timestamp": "",
+                                    "updated_at": "",
                                     "padding": ""
                                 }
                                 # write info
@@ -427,83 +452,88 @@ def main():
 
                         driver.execute_script("window.scrollBy(0, 800);")
                         time.sleep(2)
-            # Verification & HTML Report
-            print(f"\nVerifying {len(deal_list)} items on Home Depot...")
-            fp = open(tsv_output_path, 'r+', encoding="utf-8")
-            fp.readline()
-            file_pointer = fp.tell()
-            # now we should align deal_list with actual line
-            for ideal, loaded_deal in enumerate(deal_list):
-                print(f"[{ideal}] {loaded_deal['name']} at {file_pointer}...")
-                loaded_deal = dict(loaded_deal)
-                if fp.closed:
-                    fp = open(tsv_output_path, 'r+', encoding="utf-8")
-                    fp.seek(file_pointer)
-                else:
-                    fp.seek(file_pointer)
-                file_deal = dict(zip(FIELDNAMES, fp.readline().strip().split('\t')[:len(FIELDNAMES)]))
-                if loaded_deal['name'] != file_deal['name']:
-                    print(ideal)
-                    import pdb
-                    pdb.set_trace()
-                    break
-                org_timestamp = loaded_deal.get("timestamp", None)
-                timestamp = datetime.datetime.fromtimestamp(
-                    time.time()).strftime(TIMESTAMP_FORMAT)
-                if not org_timestamp or not is_within_one_day(org_timestamp, timestamp):
-                    while True:
-                        loaded_deal['hd_status'] = verify_on_home_depot(driver, loaded_deal)
-                        if loaded_deal['hd_status'] not in {
-                            HDStatus.FAILURE, HDStatus.ERROR, HDStatus.BLOCKED}:
-                            break
-                        else:
-                            if random.randint(0, 1):
-                                driver.get('https://www.homedepot.com/')
-                            else:
-                                driver.get('https://www.google.com/')
-                            waittime = random.randint(300, 600)
-                            print(f"Blocked. Waiting for {waittime} seconds...")
-                            time.sleep(waittime)
-                            print(f"Have waited for {waittime} seconds...")
-
-                    loaded_deal['timestamp'] = timestamp
-                    # reset padding so padding will be ready
-                    loaded_deal['padding'] = ''
-                    fp.seek(file_pointer)
-                    padded_line = pad_row(loaded_deal)
-                    print(f'Writing to file...\n{padded_line}')
-                    print(padded_line, file=fp)
-                    # ok now we have a new file pointer position
-                    file_pointer = fp.tell()
-                    fp.close()
-                    # Optional: You could update the CSV here row by row if desired,
-                    # but currently we just generate the HTML at the end.
-                    waittime = random.randint(20, 30)
-                    print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
-                    time.sleep(waittime)
-                    if random.randint(0, 1):
-                        driver.get('https://www.homedepot.com/')
+            if args.mode in [RunningMode.CHECK, RunningMode.ALL]:
+                # Verification & HTML Report
+                print(f"\nVerifying {len(deal_list)} items on Home Depot...")
+                fp = open(tsv_output_path, 'r+', encoding="utf-8")
+                fp.readline()
+                file_pointer = fp.tell()
+                # now we should align deal_list with actual line
+                for ideal, loaded_deal in enumerate(deal_list):
+                    print(f"[{ideal}] {loaded_deal['name']} at {file_pointer}...")
+                    loaded_deal = dict(loaded_deal)
+                    if fp.closed:
+                        fp = open(tsv_output_path, 'r+', encoding="utf-8")
+                        fp.seek(file_pointer)
                     else:
-                        driver.get('https://www.google.com/')
-                    waittime = random.randint(20, 30)
-                    print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
-                    time.sleep(waittime)
-                    if ideal % 20 == 0:
-                        waittime = random.randint(30, 60)
+                        fp.seek(file_pointer)
+                    file_deal = dict(
+                        zip(FIELDNAMES, fp.readline().strip().split('\t')[:len(FIELDNAMES)]))
+                    if loaded_deal['name'] != file_deal['name']:
+                        print(ideal)
+                        import pdb
+                        pdb.set_trace()
+                        break
+                    org_timestamp = loaded_deal.get("timestamp", None)
+                    timestamp = datetime.datetime.fromtimestamp(
+                        time.time()).strftime(TIMESTAMP_FORMAT)
+                    if not org_timestamp or not is_within_x_days(org_timestamp, timestamp):
+                        while True:
+                            loaded_deal['hd_status'] = verify_on_home_depot(driver, loaded_deal)
+                            if loaded_deal['hd_status'] not in {
+                                HDStatus.FAILURE, HDStatus.ERROR, HDStatus.BLOCKED}:
+                                break
+                            else:
+                                if random.randint(0, 1):
+                                    driver.get('https://www.homedepot.com/')
+                                else:
+                                    driver.get('https://www.google.com/')
+                                waittime = random.randint(300, 600)
+                                print(f"Blocked. Waiting for {waittime} seconds...")
+                                time.sleep(waittime)
+                                print(f"Have waited for {waittime} seconds...")
+
+                        loaded_deal['timestamp'] = timestamp
+                        # reset padding so padding will be ready
+                        loaded_deal['padding'] = ''
+                        fp.seek(file_pointer)
+                        padded_line = pad_row(loaded_deal)
+                        print(f'Writing to file...\n{padded_line}')
+                        print(padded_line, file=fp)
+                        # ok now we have a new file pointer position
+                        file_pointer = fp.tell()
+                        fp.close()
+                        # Optional: You could update the CSV here row by row if desired,
+                        # but currently we just generate the HTML at the end.
+                        waittime = random.randint(20, 30)
+                        print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
                         time.sleep(waittime)
-                        print(f"[{ideal} of {len(deal_list)}] "
-                              f"Waiting for {waittime} seconds...")
-                else:
-                    # no need to update status, switch to a new line
-                    # but there is no need to reopen file
-                    file_pointer = fp.tell()
+                        if random.randint(0, 1):
+                            driver.get('https://www.homedepot.com/')
+                        else:
+                            driver.get('https://www.google.com/')
+                        waittime = random.randint(20, 30)
+                        print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
+                        time.sleep(waittime)
+                        if ideal % 20 == 0:
+                            waittime = random.randint(30, 60)
+                            time.sleep(waittime)
+                            print(f"[{ideal} of {len(deal_list)}] "
+                                  f"Waiting for {waittime} seconds...")
+                    else:
+                        # no need to update status, switch to a new line
+                        # but there is no need to reopen file
+                        file_pointer = fp.tell()
         finally:
             driver.quit()
-            print("Scraping complete. Saving report...")
-            generate_html_report(deal_list, report_path)
+            print("Scraping complete")
+            if args.mode in [RunningMode.REPORT, RunningMode.ALL]:
+                print('. Saving report...')
+                generate_html_report(deal_list, report_path)
     else:
-        print("Scraping complete. Saving report...")
-        generate_html_report(deal_list, report_path)
+        if args.mode in [RunningMode.REPORT, RunningMode.ALL]:
+            print("Saving report...")
+            generate_html_report(deal_list, report_path)
 
 
 if __name__ == "__main__":
