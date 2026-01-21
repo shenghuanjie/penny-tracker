@@ -15,7 +15,7 @@ TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 ROW_SIZE = 1000  # Target bytes per line
 FIELDNAMES = ["name", "price", "url", "image", "hd_status", "timestamp", "padding"]
 NEWLINE = '\n'
-CSV_FILENAME = "rebel_final_report.tsv"
+TSV_FILENAME = "rebel_final_report.tsv"
 
 
 class HDStatus:
@@ -270,7 +270,7 @@ def main():
 
     # 2. Read CSV Only
     parser.add_argument("-f", "--from-tsv", type=str, metavar="FILE",
-                        default=CSV_FILENAME,
+                        default=TSV_FILENAME,
                         help="Path to an existing CSV file. "
                              "If provided, skips scraping and only generates the report.")
 
@@ -301,7 +301,7 @@ def main():
     # If a CSV input IS provided, we still output the HTML to the output dir
 
     report_path = os.path.join(args.output_dir, html_filename)
-    tsv_output_path = os.path.join(args.output_dir, CSV_FILENAME)
+    tsv_output_path = os.path.join(args.output_dir, TSV_FILENAME)
 
     # --- MODE: REPORT ONLY ---
     if args.from_tsv and os.path.isfile(args.from_tsv):
