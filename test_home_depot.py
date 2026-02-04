@@ -1,12 +1,18 @@
 import time
 import random
 import undetected_chromedriver as uc
-from selenium import webdriver  # Need this for ActionChains
-from selenium.webdriver.common.action_chains import ActionChains  # Import Standard ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
+
+def human_type(element, text):
+    """Types text into an element one char at a time with random delays."""
+    for char in text:
+        element.send_keys(char)
+        # Random delay between 50ms and 200ms
+        time.sleep(random.uniform(0.05, 0.2))
 
 
 def main():
@@ -42,6 +48,7 @@ def main():
             if (!drawer) return null;
             return drawer.querySelector('input[placeholder="Enter ZIP Code"]');
         """)
+        time.sleep(1)
 
         if not zip_input:
             raise Exception("Input not found via JS!")
@@ -49,9 +56,11 @@ def main():
         # 4. THE FIX: React-Compatible Typing
         # A. Clear value via JS (Safer than Ctrl+A which fails on Mac)
         driver.execute_script("arguments[0].value = '';", zip_input)
+        time.sleep(2)
 
         # B. Focus
         driver.execute_script("arguments[0].focus();", zip_input)
+        time.sleep(3)
 
         # C. Type normally (Standard selenium method on the element)
         # We use .send_keys on the element directly, not ActionChains
@@ -79,9 +88,31 @@ def main():
         print("Update clicked. Waiting for page reload...")
         time.sleep(5)
 
+        # 1. Locate the element (ID is the strongest selector here)
+        # You can also use By.NAME "keyword" or data-testid
+        search_box = driver.find_element(By.ID, "typeahead-search-field-input")
+
+        # 2. Click to focus (Mimic human attention)
+        search_box.click()
+        time.sleep(random.uniform(0.5, 1.0))
+
+        # 3. Clear existing text 'Human Style' (Ctrl+A -> Backspace)
+        # Standard .clear() is sometimes detected as an API call
+        search_box.send_keys(Keys.CONTROL + "a")
+        time.sleep(0.1)
+        search_box.send_keys(Keys.BACKSPACE)
+
+        # 4. Type the search term slowly
+        search_term = "336304106"
+        human_type(search_box, search_term)
+
+        # 5. Press Enter (Wait a split second after typing finishes)
+        time.sleep(random.uniform(0.3, 0.7))
+        search_box.send_keys(Keys.ENTER)
+
+
     except Exception as e:
         print(f"!!! FAILED: {e}")
-        driver.save_screenshot("debug_failure.png")
 
     print("Continuing...")
     time.sleep(10)

@@ -141,6 +141,84 @@ def navigate_ca_filters(driver):
     time.sleep(2)
 
 
+def verify_on_home_depot_online(driver, name=''):
+    """
+    Handles checking the ALREADY OPEN Home Depot tab.
+    Removed 'driver.get()' to prevent reloading the page.
+    """
+    print(f"Deep checking: {name[:30]}...")
+
+    # --- Stage 0: Immediate Block/Error Check ---
+    # Fast check: If the title is "Access Denied" or body has error msg
+    if "Access Denied" in driver.title:
+        print(f"Blocked: Access Denied title.")
+        return HDStatus.BLOCKED
+
+    error_msgs = driver.find_elements(
+        By.XPATH, "//div[@class='msg' and contains(text(), 'Something went wrong')]")
+
+    if error_msgs:
+        print(f"Blocked/Error detected for {name[:10]}: 'Oops' message found.")
+        return HDStatus.BLOCKED
+
+    wait = WebDriverWait(driver, 12)
+
+    # --- Stage 0.5: Normal Stock Check ---
+    try:
+        pickup_badges = driver.find_elements(
+            By.XPATH, "//div[contains(@class, 'sui-font-bold') and contains(text(), 'Pickup')]")
+
+        if pickup_badges:
+            print(f"Normal stock found: 'Pickup' option detected.")
+            return HDStatus.NOT_PENNY
+    except Exception:
+        pass
+
+        # --- Stage 1: Main Page Text ---
+    try:
+        # Reduced wait time slightly since page is likely already loaded
+        WebDriverWait(driver, 5).until(EC.presence_of_element_located(
+            (By.XPATH, "//p[contains(text(), 'See In-Store Clearance Price')]")))
+        return HDStatus.CLEARANCE
+    except:
+        pass
+
+    # Scroll Trigger
+    driver.execute_script("window.scrollBy(0, 700);")
+    time.sleep(2)
+    driver.execute_script("window.scrollBy(0, -500);")
+
+    # --- Stage 2: Iframe Badge Check ---
+    try:
+        # 1. Open Store Overlay
+        nearby_link = wait.until(
+            EC.element_to_be_clickable((By.XPATH, "//a[@data-testid='check-nearby-stores']")))
+        driver.execute_script("arguments[0].click();", nearby_link)
+        time.sleep(2)
+
+        # 2. SWITCH TO IFRAME
+        wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "thd-drawer-frame")))
+
+        # 3. Scroll inside iframe
+        driver.execute_script("window.scrollBy(0, 500);")
+        time.sleep(2)
+
+        # 4. Search for Badge
+        badge_xpath = "//img[contains(@src, 'Value-Pricing-Clearance')]"
+        badges = driver.find_elements(By.XPATH, badge_xpath)
+
+        # Switch back before returning
+        driver.switch_to.default_content()
+
+        status = HDStatus.PENNY_CANDIDATE if len(badges) > 0 else HDStatus.PENNY
+        return status
+
+    except Exception as e:
+        driver.switch_to.default_content()  # Safety switch back
+
+    return HDStatus.PENNY
+
+
 def verify_on_home_depot(driver, deal):
     """Handles switching into the Home Depot iframe to find the clearance badge."""
     print(f"Deep checking: {deal['name'][:30]}...")
@@ -376,83 +454,134 @@ def main():
                     if open_mode == "w":
                         print(pad_row(FIELDNAMES), file=f_out)
 
-                    while len(deal_list) < max_items:
-                        rows = driver.find_elements(By.CLASS_NAME, "summary-row")
-                        initial_count = len(seen_ids)
+                # Configuration
+                max_patience = 3  # How many consecutive scrolls with NO new items before stopping
+                current_patience = 0
 
-                        for i in range(len(rows)):
-                            if len(deal_list) >= max_items: break
+                while len(deal_list) < max_items:
+                    # 1. Grab whatever is currently in the DOM (Virtual Window)
+                    current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
 
-                            current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
-                            if i >= len(current_rows): break
-                            row = current_rows[i]
+                    new_items_found_in_this_pass = 0
+
+                    for row in current_rows:
+                        if len(deal_list) >= max_items: break
+
+                        try:
+                            # A. Extract ID quickly to check duplicates
+                            # Use relative XPath (.) to ensure we look inside THIS row
+                            name = \
+                            row.find_element(By.CLASS_NAME, "title-column").text.splitlines()[
+                                0].strip()
+                            item_id = name  # or use a unique ID if available
+
+                            if item_id in seen_ids:
+                                continue  # Skip efficiently
+
+                            # B. It is NEW, so process it
+                            price = row.find_element(By.XPATH, "./td[3]").text.strip()
 
                             try:
-                                name = row.find_element(
-                                    By.CLASS_NAME, "title-column").text.splitlines()[0].strip()
-                                price = row.find_element(By.XPATH, "./td[3]").text.strip()
-                                item_id = name
-
-                                if item_id in seen_ids:
-                                    print(f'Duplicate item found: {item_id}. '
-                                          'Continuing the search.')
-                                    continue
-
                                 img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
+                            except:
+                                img_url = ""
 
-                                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});",
-                                                      row)
-                                time.sleep(3)
-                                driver.execute_script("arguments[0].click();", row)
+                            # C. Interact (Scroll to it so it is fully rendered/clickable)
+                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});",
+                                                  row)
+                            time.sleep(1)
 
-                                hd_link_elem = WebDriverWait(driver, 8).until(
-                                    EC.presence_of_element_located((By.XPATH, "//a[@target='_blank']"))
-                                )
-                                hd_url = hd_link_elem.get_attribute("href")
-                                time.sleep(2)
+                            # Click row to open modal
+                            driver.execute_script("arguments[0].click();", row)
 
+                            # --- Modal Logic ---
+                            wait_menu = WebDriverWait(driver, 5)
+                            close_btn = wait_menu.until(
+                                EC.element_to_be_clickable((By.CLASS_NAME, "close-menu-btn")))
+
+                            hd_link_elem = wait_menu.until(
+                                EC.presence_of_element_located((By.XPATH, "//a[@target='_blank']")))
+                            hd_url = hd_link_elem.get_attribute("href")
+
+                            close_btn.click()
+                            wait_menu.until(EC.invisibility_of_element_located(
+                                (By.CLASS_NAME, "close-menu-btn")))
+                            # -------------------
+
+                            # D. Save Data
+                            original_timestamp = datetime.datetime.fromtimestamp(
+                                time.time()).strftime(TIMESTAMP_FORMAT)
+
+                            current_deal = {
+                                "name": name,
+                                "price": price,
+                                "url": hd_url,
+                                "image": img_url,
+                                "original_timestamp": original_timestamp,
+                                "hd_status": "",  # Filled below
+                                "updated_at": "",
+                                "padding": ""
+                            }
+
+                            # Verify Online (Ensure this function handles tab switching correctly)
+                            hd_status = verify_on_home_depot_online(driver, name=name)
+                            current_deal['hd_status'] = hd_status
+                            current_deal['updated_at'] = datetime.datetime.fromtimestamp(
+                                time.time()).strftime(TIMESTAMP_FORMAT)
+
+                            # Write & Store
+                            print(pad_row(current_deal), file=f_out)
+                            deal_list.append(current_deal)
+                            seen_ids.add(item_id)
+
+                            print(f"[{len(deal_list)}] Collected: {name[:30]}...")
+                            new_items_found_in_this_pass += 1
+                            time.sleep(2)  # Short pause between items
+
+                        except Exception as e:
+                            # Recovery: Ensure menu is closed if crash happened inside modal
+                            try:
                                 driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
-                                WebDriverWait(driver, 5).until(
-                                    EC.invisibility_of_element_located(
-                                        (By.CLASS_NAME, "close-menu-btn")))
+                            except:
+                                pass
+                            print(f"Skipping row due to error: {e}")
+                            continue
 
-                                original_timestamp = datetime.datetime.fromtimestamp(
-                                    time.time()).strftime(TIMESTAMP_FORMAT)
-                                # Note: hd_status is initially empty/None, filled later
-                                current_deal = {
-                                    "name": name,
-                                    "price": price,
-                                    "url": hd_url,
-                                    "image": img_url,
-                                    "original_timestamp": original_timestamp,
-                                    "hd_status": "",
-                                    "updated_at": "",
-                                    "padding": ""
-                                }
-                                # write info
-                                print(pad_row(current_deal), file=f_out)
-                                deal_list.append(current_deal)
-                                seen_ids.add(item_id)
-                                print(f"[{len(deal_list)}] Collected: {name[:35]}...")
-                                time.sleep(3)
+                    # 2. End of Pass Logic: Did we find anything new?
+                    if new_items_found_in_this_pass > 0:
+                        current_patience = 0
+                        print(
+                            f"Pass complete. Found {new_items_found_in_this_pass} new items. Scrolling...")
+                    else:
+                        current_patience += 1
+                        print(
+                            f"Pass complete. NO new items found. Patience: {current_patience}/{max_patience}")
 
-                            except Exception as e:
-                                try:
-                                    driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
-                                except:
-                                    pass
-                                time.sleep(10)
-                                continue
+                    if current_patience >= max_patience:
+                        print("Max patience reached. Assuming end of list.")
+                        break
 
-                        if len(seen_ids) == initial_count:
-                            patience += 1
-                            if patience >= 3: break
-                        else:
-                            patience = 0
+                    # 3. SCROLL STEP
+                    # In virtual lists, we just scroll down by a fixed amount (e.g. window height)
+                    # to force the framework to unload top rows and load bottom rows.
+                    driver.execute_script("window.scrollBy(0, 800);")
 
-                        driver.execute_script("window.scrollBy(0, 800);")
-                        time.sleep(2)
-            if args.mode in [RunningMode.CHECK, RunningMode.ALL]:
+                    # 4. Wait for Load (User requested 5-10 seconds)
+                    wait_time = random.uniform(5, 10)
+                    print(f"Waiting {wait_time:.1f}s for new rows...")
+                    time.sleep(wait_time)
+
+                    # 5. Check specific End of List Text (Optional but recommended)
+                    try:
+                        if driver.find_elements(By.XPATH, "//*[contains(text(), 'End of list')]"):
+                            print("Termination text found.")
+                            break
+                    except:
+                        pass
+
+                print("Done.")
+
+            if args.mode == RunningMode.CHECK:
                 # Verification & HTML Report
                 print(f"\nVerifying {len(deal_list)} items on Home Depot...")
                 fp = open(tsv_output_path, 'r+', encoding="utf-8")
