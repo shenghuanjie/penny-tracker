@@ -321,12 +321,12 @@ def pad_row(input_list, target_char_length=ROW_SIZE, pad_char=" "):
 
 def process_tracker_items(driver, deal_list, tsv_output_path):
     # Open file in append mode (or write if empty)
-    open_mode = 'a' if os.path.isfile(tsv_output_path) else 'w'
+    open_mode = 'a+' if os.path.isfile(tsv_output_path) else 'w+'
 
     # Using 'r+' implies reading/writing, but standard append is safer for logs
     # However, we want to maintain the header if new
     with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
-        if open_mode == "w":
+        if open_mode == "w+":
             print(pad_row(FIELDNAMES), file=f_out)
         seen_ids = [deal['name'] for deal in deal_list]
         url = "https://shenghuanjie.github.io/penny-tracker/"
@@ -497,12 +497,12 @@ def main():
             driver.execute_script("document.body.style.zoom='75%'")
 
             # Open file in append mode (or write if empty)
-            open_mode = 'a' if os.path.isfile(tsv_output_path) else 'w'
+            open_mode = 'a+' if os.path.isfile(tsv_output_path) else 'w+'
 
             # Using 'r+' implies reading/writing, but standard append is safer for logs
             # However, we want to maintain the header if new
             with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
-                if open_mode == "w":
+                if open_mode == "w+":
                     print(pad_row(FIELDNAMES), file=f_out)
 
                 max_patience = 3
