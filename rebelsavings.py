@@ -6,10 +6,10 @@ import argparse
 import random
 
 import undetected_chromedriver as uc
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
 
 TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 ROW_SIZE = 1000  # Target bytes per line
@@ -20,13 +20,41 @@ TSV_FILENAME = "rebel_final_report.tsv"
 BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
 
 
+def human_click(driver, element):
+    # 1. Get the element's size to calculate safe click boundaries
+    size = element.size
+    width = size['width']
+    height = size['height']
+
+    # 2. Calculate a random offset (avoiding the very edges)
+    # We divide by 4 to keep the click safely near the middle area, but not exact center
+    rand_x = random.randint(-int(width / 4), int(width / 4))
+    rand_y = random.randint(-int(height / 4), int(height / 4))
+
+    # 3. Setup the action chain
+    actions = ActionChains(driver)
+
+    # 4. Move to the element with the random offset
+    actions.move_to_element_with_offset(element, rand_x, rand_y)
+
+    # 5. "Hesitation" - Humans pause briefly before clicking
+    time.sleep(random.uniform(0.2, 0.7))
+
+    # 6. Perform the click
+    actions.click()
+    actions.perform()
+
+    # 7. Post-click pause (humans don't react instantly after clicking)
+    time.sleep(random.uniform(0.5, 1.5))
+
+
 class RunningMode:
     # clean up TSV by removing old entries
     CLEAN = 'clean'
     SEARCH = 'search'
-    CHECK = 'check'
+    # Report only
     REPORT = 'report'
-    # clean followed by search, check, and report
+    # clean followed by search and report
     ALL = 'all'
 
 
@@ -42,6 +70,30 @@ class HDStatus:
 
 def generate_html_report(deals, output_path):
     """Creates a visual HTML report with images and status colors."""
+
+    # --- SORTING LOGIC ---
+    # Define priority: Penny items first, then candidates, then clearance, then failures.
+    status_priority = {
+        'penny': 0,
+        'penny_candidate': 1,
+        'clearance': 2,
+        'not_penny': 3,
+        'error': 4,
+        'failure': 5,
+        'blocked': 6,
+        'unchecked': 7
+    }
+
+    # Sort in-place
+    # 1. Get priority rank (default to 99 if unknown)
+    # 2. Sort by timestamp string (Ascending: Oldest -> Newest)
+    #    (To reverse time sort to Newest -> Oldest, change to: reverse=True or negation)
+    deals.sort(key=lambda d: (
+        status_priority.get(d.get('hd_status'), 99),
+        d.get('original_timestamp', '')
+    ))
+    # ---------------------
+
     html = """
     <html><head><style>
         body { font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }
@@ -66,9 +118,7 @@ def generate_html_report(deals, output_path):
         <table><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Link</th></tr>"""
 
     for d in deals:
-        # Handle cases where CSV might not have status or image
         status = d.get('hd_status', 'unchecked')
-        # If status is empty string, treat as unchecked
         if not status: status = 'unchecked'
 
         image_src = d.get('image', '')
@@ -92,20 +142,10 @@ def generate_html_report(deals, output_path):
 
 
 def is_within_x_days(timestamp1, timestamp2, days=3):
-    """
-    Checks if two timestamp strings are within 24 hours of each other.
-    Format: '%Y-%m-%d %H:%M:%S'
-    """
-
-    # Convert strings to datetime objects
     try:
         d1 = datetime.datetime.strptime(timestamp1, TIMESTAMP_FORMAT)
         d2 = datetime.datetime.strptime(timestamp2, TIMESTAMP_FORMAT)
-
-        # Calculate absolute difference
         diff = abs(d1 - d2)
-
-        # Check if difference is less than or equal to 1 day
         return diff <= datetime.timedelta(days=days)
     except ValueError:
         return False
@@ -117,75 +157,76 @@ def navigate_ca_filters(driver):
     print("Applying CA State and City filters...")
 
     # Select CA
-    state_btn = wait.until(
-        EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'All States')]")))
-    state_btn.click()
-    wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(., 'CA')]"))).click()
-    state_btn.click()
-    time.sleep(2)
+    try:
+        state_btn = wait.until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'All States')]")))
+        state_btn.click()
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(., 'CA')]"))).click()
+        state_btn.click()
+        time.sleep(2)
 
-    # Select Cities
-    city_btn = wait.until(
-        EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'All Cities')]")))
-    city_btn.click()
-    cities = ["Campbell", "Fremont", "Hayward", "Milpitas", "San Jose", "Sunnyvale", "Union City"]
-    for city in cities:
-        try:
-            city_label = wait.until(
-                EC.element_to_be_clickable((By.XPATH, f"//label[contains(., '{city}')]")))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", city_label)
-            city_label.click()
-        except:
-            continue
-    city_btn.click()
-    time.sleep(2)
+        # Select Cities
+        city_btn = wait.until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'All Cities')]")))
+        city_btn.click()
+        cities = ["Campbell", "Fremont", "Hayward", "Milpitas", "San Jose", "Sunnyvale",
+                  "Union City"]
+        for city in cities:
+            try:
+                city_label = wait.until(
+                    EC.element_to_be_clickable((By.XPATH, f"//label[contains(., '{city}')]")))
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", city_label)
+                city_label.click()
+            except:
+                continue
+        city_btn.click()
+        time.sleep(2)
+    except Exception as e:
+        print(f"Filter navigation warning: {e}")
 
 
-def verify_on_home_depot_online(driver, name=''):
+def check_active_tab_status(driver, name=''):
     """
-    Handles checking the ALREADY OPEN Home Depot tab.
-    Removed 'driver.get()' to prevent reloading the page.
+    Analyzes the CURRENT active tab (Home Depot) to determine status.
+    Does NOT perform navigation (driver.get).
     """
-    print(f"Deep checking: {name[:30]}...")
+    print(f"   > Verifying: {name[:25]}...")
 
     # --- Stage 0: Immediate Block/Error Check ---
-    # Fast check: If the title is "Access Denied" or body has error msg
     if "Access Denied" in driver.title:
-        print(f"Blocked: Access Denied title.")
+        print(f"   > Blocked: Access Denied title.")
         return HDStatus.BLOCKED
 
     error_msgs = driver.find_elements(
         By.XPATH, "//div[@class='msg' and contains(text(), 'Something went wrong')]")
 
     if error_msgs:
-        print(f"Blocked/Error detected for {name[:10]}: 'Oops' message found.")
+        print(f"   > Blocked/Error detected: 'Oops' message found.")
         return HDStatus.BLOCKED
 
-    wait = WebDriverWait(driver, 12)
+    wait = WebDriverWait(driver, 8)
 
     # --- Stage 0.5: Normal Stock Check ---
     try:
         pickup_badges = driver.find_elements(
             By.XPATH, "//div[contains(@class, 'sui-font-bold') and contains(text(), 'Pickup')]")
-
         if pickup_badges:
-            print(f"Normal stock found: 'Pickup' option detected.")
+            # print(f"   > Normal stock found.")
             return HDStatus.NOT_PENNY
     except Exception:
         pass
 
-        # --- Stage 1: Main Page Text ---
+    # --- Stage 1: Main Page Text ---
     try:
-        # Reduced wait time slightly since page is likely already loaded
-        WebDriverWait(driver, 5).until(EC.presence_of_element_located(
+        wait.until(EC.presence_of_element_located(
             (By.XPATH, "//p[contains(text(), 'See In-Store Clearance Price')]")))
         return HDStatus.CLEARANCE
     except:
         pass
 
-    # Scroll Trigger
+    # Scroll Trigger for lazy load
     driver.execute_script("window.scrollBy(0, 700);")
-    time.sleep(2)
+    time.sleep(1.5)
     driver.execute_script("window.scrollBy(0, -500);")
 
     # --- Stage 2: Iframe Badge Check ---
@@ -193,7 +234,8 @@ def verify_on_home_depot_online(driver, name=''):
         # 1. Open Store Overlay
         nearby_link = wait.until(
             EC.element_to_be_clickable((By.XPATH, "//a[@data-testid='check-nearby-stores']")))
-        driver.execute_script("arguments[0].click();", nearby_link)
+        # driver.execute_script("arguments[0].click();", nearby_link)
+        human_click(driver, nearby_link)
         time.sleep(2)
 
         # 2. SWITCH TO IFRAME
@@ -201,7 +243,7 @@ def verify_on_home_depot_online(driver, name=''):
 
         # 3. Scroll inside iframe
         driver.execute_script("window.scrollBy(0, 500);")
-        time.sleep(2)
+        time.sleep(1)
 
         # 4. Search for Badge
         badge_xpath = "//img[contains(@src, 'Value-Pricing-Clearance')]"
@@ -219,193 +261,68 @@ def verify_on_home_depot_online(driver, name=''):
     return HDStatus.PENNY
 
 
-def verify_on_home_depot(driver, deal):
-    """Handles switching into the Home Depot iframe to find the clearance badge."""
-    print(f"Deep checking: {deal['name'][:30]}...")
-    try:
-        driver.get(deal['url'])
-
-        # --- Stage 0: Immediate Block/Error Check ---
-        error_msgs = driver.find_elements(
-            By.XPATH, "//div[@class='msg' and contains(text(), 'Something went wrong')]")
-
-        if error_msgs:
-            print(f"Blocked/Error detected for {deal['name'][:10]}: 'Oops' message found.")
-            return HDStatus.BLOCKED
-
-        wait = WebDriverWait(driver, 12)
-
-        # --- Stage 0.5: Normal Stock Check (The "Pickup" Element) ---
-        # If "Pickup" is displayed, it usually means the item is in stock at normal/clearance price
-        # and not a hidden "Penny" item.
-        # We use a loose XPath to match the "Pickup" text inside the styled div.
-        try:
-            pickup_badges = driver.find_elements(
-                By.XPATH, "//div[contains(@class, 'sui-font-bold') and contains(text(), 'Pickup')]")
-
-            if pickup_badges:
-                print(f"Normal stock found for {deal['name'][:10]}: 'Pickup' option detected.")
-                return HDStatus.NOT_PENNY
-        except Exception:
-            pass  # Continue if check fails or element not found
-
-        # --- Stage 1: Main Page Text ---
-        try:
-            wait.until(EC.presence_of_element_located(
-                (By.XPATH, "//p[contains(text(), 'See In-Store Clearance Price')]")))
-            return HDStatus.CLEARANCE
-        except:
-            pass
-
-        for _ in range(1):
-            driver.execute_script("window.scrollBy(0, 1000);")
-            time.sleep(3)
-            driver.execute_script("window.scrollBy(0, -1000);")
-            time.sleep(2)
-
-        # --- Stage 2: Iframe Badge Check ---
-        try:
-            # 1. Open the Store Overlay
-            nearby_link = wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//a[@data-testid='check-nearby-stores']")))
-            driver.execute_script("arguments[0].click();", nearby_link)
-            time.sleep(3)  # Wait for iframe to mount
-
-            # 2. SWITCH TO THE IFRAME
-            wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "thd-drawer-frame")))
-
-            # 3. Scroll inside the iframe context
-            for _ in range(1):
-                driver.execute_script("window.scrollBy(0, 1000);")
-                time.sleep(3)
-
-            # 4. Search for the Badge
-            badge_xpath = "//img[contains(@src, 'Value-Pricing-Clearance')]"
-            badges = driver.find_elements(By.XPATH, badge_xpath)
-
-            # Switch back to the main document before returning
-            status = HDStatus.PENNY_CANDIDATE if len(badges) > 0 else HDStatus.PENNY
-            driver.switch_to.default_content()
-            return status
-
-        except Exception as e:
-            # print(f"Iframe/Overlay check failed: {e}")
-            driver.switch_to.default_content()  # Always switch back on error
-        finally:
-            time.sleep(3)
-
-        return HDStatus.PENNY
-
-    except Exception:
-        # Fallback check in case the element wasn't caught in Stage 0
-        # but appears in the page source during a crash
-        if "Something went wrong" in driver.page_source:
-            return HDStatus.FAILURE
-        return HDStatus.ERROR
-
-
 def get_driver():
-    # profile_path = os.path.join(os.getcwd(), "hd_profile")
     options = uc.ChromeOptions()
-    # options.add_argument(f"--user-data-dir={profile_path}")
-    # Important: Randomize window size slightly to avoid "default selenium" dimensions
     options.add_argument("--window-size=1920,1080")
-    # Force version 138 to match your browser
+    # Force version 138 to match your browser if needed, else remove version_main
     driver = uc.Chrome(options=options, version_main=138)
     return driver
 
 
 def pad_row(input_list, target_char_length=ROW_SIZE, pad_char=" "):
-    """
-    Converts a list to a tab-delimited string of a strictly fixed character length.
-
-    Args:
-        input_list (list or dict): The list of items to join.
-        target_char_length (int): The total character count required.
-        pad_char (str): The character to use for padding (default is space).
-
-    Returns:
-        str: A string exactly `target_char_length` characters long.
-    """
-    # new to consider the extra line break
     target_char_length -= 1
     if isinstance(input_list, dict):
         input_list = input_list.values()
-    # 1. Join the list into a standard TSV string
-    # Convert all items to strings first to handle None/Ints safely
     tsv_string = "\t".join(str(item) for item in input_list)
-
     current_len = len(tsv_string)
 
-    # 2. Pad if too short
     if current_len < target_char_length:
-        # ljust adds padding to the right side
         return tsv_string.ljust(target_char_length, pad_char)
-
-    # 3. Truncate if too long
     elif current_len > target_char_length:
         return tsv_string[:target_char_length]
-
-    # 4. Exact match
     return tsv_string
-
 
 
 def main():
     parser = argparse.ArgumentParser(description="RebelSavings Scraper & Reporter")
-
-    # 1. Max Items
     parser.add_argument("-n", "--max-items", type=int, default=None,
-                        help="Maximum number of items to scrape (default: None)")
-
-    # 2. Read CSV Only
+                        help="Maximum number of items to scrape")
     parser.add_argument("-f", "--from-tsv", type=str, metavar="FILE",
-                        default=TSV_FILENAME,
-                        help="Path to an existing CSV file. "
-                             "If provided, skips scraping and only generates the report.")
-
-    # 3. Output Folder
+                        default=TSV_FILENAME, help="Path to existing CSV")
     parser.add_argument("-o", "--output-dir", type=str, default=".",
-                        help="Folder to save the CSV and HTML report (default: current directory)")
-
+                        help="Folder to save the CSV and HTML report")
     parser.add_argument("-m", "--mode", choices=[
-                        RunningMode.CLEAN, RunningMode.CHECK,
-                        RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL],
+        RunningMode.CLEAN,
+        RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL],
                         default=RunningMode.ALL,
                         help="Running mode.")
 
     args = parser.parse_args()
 
-    # Ensure output directory exists
     if args.output_dir and not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
-    # Define Output Paths
     html_filename = "index.html"
     deal_list = []
-
-    # If a CSV input is not provided, we use the standard output name
-    # If a CSV input IS provided, we still output the HTML to the output dir
-
     report_path = os.path.join(args.output_dir, html_filename)
     tsv_output_path = os.path.join(args.output_dir, TSV_FILENAME)
     backuptsv_output_path = os.path.join(args.output_dir, BACKUP_TSV_FILENAME)
 
-    # --- MODE: REPORT ONLY ---
-    if args.from_tsv and os.path.isfile(args.from_tsv):
+    # --- LOAD EXISTING DATA ---
+    if os.path.isfile(args.from_tsv):
         print(f"Reading data from {args.from_tsv}...")
-        deal_list = []
-        with open(args.from_tsv, "r", encoding="utf-8") as f_out:
-            f_out.readline() # skip header
-            for row in f_out:
-                row = dict(zip(FIELDNAMES, row.strip().split("\t")[:len(FIELDNAMES)]))
-                if len(row) >= 4:
-                    deal_list.append(row)
-                else:
-                    print(f'{len(row)}: {row}')
+        try:
+            with open(args.from_tsv, "r", encoding="utf-8") as f_out:
+                f_out.readline()  # skip header
+                for row in f_out:
+                    parts = row.strip().split("\t")
+                    if len(parts) >= len(FIELDNAMES):
+                        row_dict = dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)]))
+                        deal_list.append(row_dict)
+        except Exception as e:
+            print(f"Error reading TSV: {e}")
 
-        print(f"Loaded {len(deal_list)} items.")
-
+    # --- CLEANING OLD DATA ---
     if args.mode in [RunningMode.CLEAN, RunningMode.ALL] and deal_list:
         new_deal_list = []
         for deal_row in deal_list:
@@ -413,50 +330,41 @@ def main():
             timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
             if org_timestamp is None or is_within_x_days(org_timestamp, timestamp, days=60):
                 new_deal_list.append(deal_row)
-        if new_deal_list != deal_list:
+
+        if len(new_deal_list) != len(deal_list):
+            print(f"Cleaned {len(deal_list) - len(new_deal_list)} old items.")
             shutil.copyfile(args.from_tsv, backuptsv_output_path)
+            deal_list = new_deal_list  # Update memory
             with open(tsv_output_path, 'w', encoding="utf-8") as fp:
                 print(pad_row(FIELDNAMES), file=fp)
                 for deal_row in new_deal_list:
-                    padded_line = pad_row(deal_row)
-                    print(padded_line, file=fp)
+                    print(pad_row(deal_row), file=fp)
 
-    if args.mode in [RunningMode.SEARCH, RunningMode.CHECK, RunningMode.ALL]:
+    # --- SEARCH AND CHECK (MERGED) ---
+    if args.mode in [RunningMode.SEARCH, RunningMode.ALL]:
         driver = get_driver()
-        # --- MODE: SCRAPE AND VERIFY ---
         try:
-            if deal_list:
-                seen_ids = set(deal['name'] for deal in deal_list)
-            else:
-                seen_ids = set()
-            max_items = args.max_items  # Use the argument
-            if max_items is None:
-                max_items = float('inf')
-            patience = 0
+            seen_ids = set(deal['name'] for deal in deal_list)
+            max_items = args.max_items if args.max_items is not None else float('inf')
 
-            print(f"Starting item collection (Max: {max_items})...")
+            print(f"Starting item collection & verification (Max: {max_items})...")
 
-            if args.mode in [RunningMode.SEARCH, RunningMode.ALL] and deal_list:
+            driver.get("https://www.rebelsavings.com/")
+            navigate_ca_filters(driver)
+            driver.execute_script("document.body.style.zoom='75%'")
 
-                driver.get("https://www.rebelsavings.com/")
-                navigate_ca_filters(driver)
+            # Open file in append mode (or write if empty)
+            open_mode = 'a' if os.path.isfile(tsv_output_path) else 'w'
 
-                # Help the virtual scroll by zooming out
-                driver.execute_script("document.body.style.zoom='75%'")
+            # Using 'r+' implies reading/writing, but standard append is safer for logs
+            # However, we want to maintain the header if new
+            with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
+                if open_mode == "w":
+                    print(pad_row(FIELDNAMES), file=f_out)
 
-                # Save results to the specified output folder
-                if os.path.isfile(tsv_output_path):
-                    open_mode = 'a'
-                else:
-                    open_mode = 'w'
-
-                with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
-                    if open_mode == "w":
-                        print(pad_row(FIELDNAMES), file=f_out)
-
-                # Configuration
-                max_patience = 3  # How many consecutive scrolls with NO new items before stopping
+                max_patience = 3
                 current_patience = 0
+                main_window = driver.current_window_handle  # Store RebelSavings Handle
 
                 while len(deal_list) < max_items:
                     # 1. Grab whatever is currently in the DOM (Virtual Window)
@@ -468,17 +376,13 @@ def main():
                         if len(deal_list) >= max_items: break
 
                         try:
-                            # A. Extract ID quickly to check duplicates
-                            # Use relative XPath (.) to ensure we look inside THIS row
-                            name = \
-                            row.find_element(By.CLASS_NAME, "title-column").text.splitlines()[
-                                0].strip()
-                            item_id = name  # or use a unique ID if available
+                            name_elem = row.find_element(By.CLASS_NAME, "title-column")
+                            name = name_elem.text.splitlines()[0].strip()
 
-                            if item_id in seen_ids:
-                                continue  # Skip efficiently
+                            if name in seen_ids:
+                                continue
 
-                            # B. It is NEW, so process it
+                            # --- 1. Get Rebel Data ---
                             price = row.find_element(By.XPATH, "./td[3]").text.strip()
 
                             try:
@@ -489,7 +393,7 @@ def main():
                             # C. Interact (Scroll to it so it is fully rendered/clickable)
                             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});",
                                                   row)
-                            time.sleep(1)
+                            time.sleep(random.uniform(1, 2))
 
                             # Click row to open modal
                             driver.execute_script("arguments[0].click();", row)
@@ -499,55 +403,94 @@ def main():
                             close_btn = wait_menu.until(
                                 EC.element_to_be_clickable((By.CLASS_NAME, "close-menu-btn")))
 
-                            hd_link_elem = wait_menu.until(
-                                EC.presence_of_element_located((By.XPATH, "//a[@target='_blank']")))
+                            hd_link_elem = wait_menu.until(EC.element_to_be_clickable(
+                                (By.XPATH, "//div[contains(@class, 'detail-overlay-content')]//a")))
                             hd_url = hd_link_elem.get_attribute("href")
 
+                            # Click for Modal to get Link
+                            time.sleep(random.uniform(1, 3))
+
+                            # 1. Capture current window handles to detect the new one
+                            old_handles = driver.window_handles
+
+                            # 2. CLICK the link (Using JS is often more reliable in modals)
+                            print(f"   Clicking link for: {name[:20]}...")
+                            # driver.execute_script("arguments[0].click();", hd_link_elem)
+                            human_click(driver, hd_link_elem)
+
+                            # 3. Wait for the new tab to appear in the handle list
+                            WebDriverWait(driver, 10).until(EC.new_window_is_opened(old_handles))
+
+                            # --- 5. SWITCH TO NEW TAB & VERIFY ---
+                            # Switch to the newest handle (the one just opened)
+                            driver.switch_to.window(driver.window_handles[-1])
+
+                            try:
+                                # No driver.get() needed; the click triggered the load.
+                                # Perform verification on the active tab
+                                hd_status = check_active_tab_status(driver, name=name)
+                            except Exception as e:
+                                print(f"   Error checking tab: {e}")
+                                hd_status = HDStatus.ERROR
+
+                            # Close the HD tab
+                            driver.close()
+
+                            # 4. Close Modal on the main page (cleanup)
+                            driver.switch_to.window(driver.window_handles[0])
                             close_btn.click()
                             wait_menu.until(EC.invisibility_of_element_located(
                                 (By.CLASS_NAME, "close-menu-btn")))
-                            # -------------------
 
-                            # D. Save Data
-                            original_timestamp = datetime.datetime.fromtimestamp(
-                                time.time()).strftime(TIMESTAMP_FORMAT)
+                            # Switch back to RebelSavings
+                            driver.switch_to.window(main_window)
+                            # -------------------------------------
 
+                            # --- 3. SAVE DATA ---
                             current_deal = {
                                 "name": name,
                                 "price": price,
                                 "url": hd_url,
                                 "image": img_url,
-                                "original_timestamp": original_timestamp,
-                                "hd_status": "",  # Filled below
-                                "updated_at": "",
+                                "original_timestamp": datetime.datetime.fromtimestamp(
+                                    time.time()).strftime(TIMESTAMP_FORMAT),
+                                "hd_status": hd_status,
+                                "updated_at": datetime.datetime.fromtimestamp(time.time()).strftime(
+                                    TIMESTAMP_FORMAT),
                                 "padding": ""
                             }
 
-                            # Verify Online (Ensure this function handles tab switching correctly)
-                            hd_status = verify_on_home_depot_online(driver, name=name)
-                            current_deal['hd_status'] = hd_status
-                            current_deal['updated_at'] = datetime.datetime.fromtimestamp(
-                                time.time()).strftime(TIMESTAMP_FORMAT)
-
-                            # Write & Store
                             print(pad_row(current_deal), file=f_out)
-                            deal_list.append(current_deal)
-                            seen_ids.add(item_id)
+                            f_out.flush()  # Ensure it's written immediately
 
-                            print(f"[{len(deal_list)}] Collected: {name[:30]}...")
+                            deal_list.append(current_deal)
+                            seen_ids.add(name)
                             new_items_found_in_this_pass += 1
-                            time.sleep(2)  # Short pause between items
+
+                            # Anti-detection pause between tabs
+                            if hd_status == HDStatus.BLOCKED:
+                                sleep_time = random.randint(300, 600)
+                                print(f"!!! BLOCKED DETECTED. Sleeping {sleep_time}s !!!")
+                                time.sleep(sleep_time)
+                            else:
+                                time.sleep(random.uniform(2, 5))
 
                         except Exception as e:
-                            # Recovery: Ensure menu is closed if crash happened inside modal
+                            # Recovery if something broke
                             try:
-                                driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
+                                if len(driver.window_handles) > 1:
+                                    # Ensure we are on main window and extra tabs are closed
+                                    for handle in driver.window_handles:
+                                        if handle != main_window:
+                                            driver.switch_to.window(handle)
+                                            driver.close()
+                                    driver.switch_to.window(main_window)
                             except:
                                 pass
                             print(f"Skipping row due to error: {e}")
                             continue
 
-                    # 2. End of Pass Logic: Did we find anything new?
+                    # --- End of Pass Logic ---
                     if new_items_found_in_this_pass > 0:
                         current_patience = 0
                         print(
@@ -555,114 +498,27 @@ def main():
                     else:
                         current_patience += 1
                         print(
-                            f"Pass complete. NO new items found. Patience: {current_patience}/{max_patience}")
+                            f"Pass complete. NO new items. Patience: {current_patience}/{max_patience}")
 
                     if current_patience >= max_patience:
-                        print("Max patience reached. Assuming end of list.")
+                        print("Max patience reached. Stopping.")
                         break
 
-                    # 3. SCROLL STEP
-                    # In virtual lists, we just scroll down by a fixed amount (e.g. window height)
-                    # to force the framework to unload top rows and load bottom rows.
                     driver.execute_script("window.scrollBy(0, 800);")
+                    time.sleep(random.uniform(4, 7))
 
-                    # 4. Wait for Load (User requested 5-10 seconds)
-                    wait_time = random.uniform(5, 10)
-                    print(f"Waiting {wait_time:.1f}s for new rows...")
-                    time.sleep(wait_time)
-
-                    # 5. Check specific End of List Text (Optional but recommended)
-                    try:
-                        if driver.find_elements(By.XPATH, "//*[contains(text(), 'End of list')]"):
-                            print("Termination text found.")
-                            break
-                    except:
-                        pass
-
-                print("Done.")
-
-            if args.mode == RunningMode.CHECK:
-                # Verification & HTML Report
-                print(f"\nVerifying {len(deal_list)} items on Home Depot...")
-                fp = open(tsv_output_path, 'r+', encoding="utf-8")
-                fp.readline()
-                file_pointer = fp.tell()
-                # now we should align deal_list with actual line
-                for ideal, loaded_deal in enumerate(deal_list):
-                    print(f"[{ideal}] {loaded_deal['name']} at {file_pointer}...")
-                    loaded_deal = dict(loaded_deal)
-                    if fp.closed:
-                        fp = open(tsv_output_path, 'r+', encoding="utf-8")
-                        fp.seek(file_pointer)
-                    else:
-                        fp.seek(file_pointer)
-                    file_deal = dict(
-                        zip(FIELDNAMES, fp.readline().strip().split('\t')[:len(FIELDNAMES)]))
-                    if loaded_deal['name'] != file_deal['name']:
-                        print(ideal)
-                        import pdb
-                        pdb.set_trace()
-                        break
-                    org_timestamp = loaded_deal.get("timestamp", None)
-                    timestamp = datetime.datetime.fromtimestamp(
-                        time.time()).strftime(TIMESTAMP_FORMAT)
-                    if not org_timestamp or not is_within_x_days(org_timestamp, timestamp):
-                        while True:
-                            loaded_deal['hd_status'] = verify_on_home_depot(driver, loaded_deal)
-                            if loaded_deal['hd_status'] not in {
-                                HDStatus.FAILURE, HDStatus.ERROR, HDStatus.BLOCKED}:
-                                break
-                            else:
-                                if random.randint(0, 1):
-                                    driver.get('https://www.homedepot.com/')
-                                else:
-                                    driver.get('https://www.google.com/')
-                                waittime = random.randint(300, 600)
-                                print(f"Blocked. Waiting for {waittime} seconds...")
-                                time.sleep(waittime)
-                                print(f"Have waited for {waittime} seconds...")
-
-                        loaded_deal['timestamp'] = timestamp
-                        # reset padding so padding will be ready
-                        loaded_deal['padding'] = ''
-                        fp.seek(file_pointer)
-                        padded_line = pad_row(loaded_deal)
-                        print(f'Writing to file...\n{padded_line}')
-                        print(padded_line, file=fp)
-                        # ok now we have a new file pointer position
-                        file_pointer = fp.tell()
-                        fp.close()
-                        # Optional: You could update the CSV here row by row if desired,
-                        # but currently we just generate the HTML at the end.
-                        waittime = random.randint(20, 30)
-                        print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
-                        time.sleep(waittime)
-                        if random.randint(0, 1):
-                            driver.get('https://www.homedepot.com/')
-                        else:
-                            driver.get('https://www.google.com/')
-                        waittime = random.randint(20, 30)
-                        print(f"[{ideal} of {len(deal_list)}] Waiting for {waittime} seconds...")
-                        time.sleep(waittime)
-                        if ideal % 20 == 0:
-                            waittime = random.randint(30, 60)
-                            time.sleep(waittime)
-                            print(f"[{ideal} of {len(deal_list)}] "
-                                  f"Waiting for {waittime} seconds...")
-                    else:
-                        # no need to update status, switch to a new line
-                        # but there is no need to reopen file
-                        file_pointer = fp.tell()
         finally:
             driver.quit()
-            print("Scraping complete")
-            if args.mode in [RunningMode.REPORT, RunningMode.ALL]:
-                print('. Saving report...')
-                generate_html_report(deal_list, report_path)
-    else:
-        if args.mode in [RunningMode.REPORT, RunningMode.ALL]:
-            print("Saving report...")
+            print("Scraping & Verification complete")
+
+            # Generate Report at the end
+            print('Saving HTML report...')
             generate_html_report(deal_list, report_path)
+
+    # --- REPORT ONLY MODE ---
+    elif args.mode == RunningMode.REPORT:
+        print("Generating report from existing TSV...")
+        generate_html_report(deal_list, report_path)
 
 
 if __name__ == "__main__":
