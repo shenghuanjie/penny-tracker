@@ -376,7 +376,7 @@ def process_tracker_items(driver, deal_list, f_out):
                 driver.switch_to.window(main_window_handle)
 
                 # Small pause to ensure stability before next iteration
-                time.sleep(1)
+                time.sleep(random.uniform(5, 11))
 
         except Exception as e:
             print(f"Skipping row due to error: {e}")
