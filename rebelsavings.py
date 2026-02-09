@@ -356,8 +356,8 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                 # (Indices are 0-based: Name=1, Status=3, Link=4)
                 name_element = cells[1]
                 status_element = cells[3]
-                link_container = cells[4]
-                timestamp_element = cells[5]
+                timestamp_element = cells[4]
+                link_container = cells[5]
 
                 item_name = name_element.text
                 status_text = status_element.text
@@ -684,10 +684,10 @@ def main():
 
     elif args.mode == RunningMode.CHECK:
 
-        os.system('source update.sh')
-
-        if has_git_updates():
-            time.sleep(30)
+        # os.system('source update.sh')
+        #
+        # if has_git_updates():
+        #     time.sleep(30)
 
         driver = get_driver()
         process_tracker_items(driver, deal_list, tsv_output_path)
