@@ -319,103 +319,111 @@ def pad_row(input_list, target_char_length=ROW_SIZE, pad_char=" "):
     return tsv_string
 
 
-def process_tracker_items(driver, deal_list, f_out):
-    seen_ids = [deal['name'] for deal in deal_list]
-    url = "https://shenghuanjie.github.io/penny-tracker/"
-    driver.get(url)
+def process_tracker_items(driver, deal_list, tsv_output_path):
+    # Open file in append mode (or write if empty)
+    open_mode = 'a' if os.path.isfile(tsv_output_path) else 'w'
 
-    # 1. Wait for the table to load
-    wait = WebDriverWait(driver, 10)
-    wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+    # Using 'r+' implies reading/writing, but standard append is safer for logs
+    # However, we want to maintain the header if new
+    with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
+        if open_mode == "w":
+            print(pad_row(FIELDNAMES), file=f_out)
+        seen_ids = [deal['name'] for deal in deal_list]
+        url = "https://shenghuanjie.github.io/penny-tracker/"
+        driver.get(url)
 
-    # Store the ID of the main window so we can return to it
-    main_window_handle = driver.current_window_handle
+        # 1. Wait for the table to load
+        wait = WebDriverWait(driver, 10)
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
 
-    # 2. Find all rows (skipping the first header row)
-    rows = driver.find_elements(By.XPATH, "//table//tr")[1:]
+        # Store the ID of the main window so we can return to it
+        main_window_handle = driver.current_window_handle
 
-    print(f"Found {len(rows)} items in the table.")
+        # 2. Find all rows (skipping the first header row)
+        rows = driver.find_elements(By.XPATH, "//table//tr")[1:]
 
-    for row in rows:
-        try:
-            # Re-locate cells to avoid StaleElementReferenceException
-            cells = row.find_elements(By.TAG_NAME, "td")
+        print(f"Found {len(rows)} items in the table.")
 
-            if not cells:
-                continue
+        for row in rows:
+            try:
+                # Re-locate cells to avoid StaleElementReferenceException
+                cells = row.find_elements(By.TAG_NAME, "td")
 
-            # Column 1: Image, 2: Name, 3: Price, 4: Status, 5: Timestamp, 6: Link
-            # (Indices are 0-based: Name=1, Status=3, Link=4)
-            name_element = cells[1]
-            status_element = cells[3]
-            link_container = cells[4]
-            timestamp_element = cells[5]
-
-            item_name = name_element.text
-            status_text = status_element.text
-            update_timestamp = timestamp_element.text
-
-            timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
-
-            # 3. Logic: Skip if strictly "PENNY"
-            if status_text != "PENNY" and not is_within_x_days(timestamp, update_timestamp, 1):
-                print(f"\n[Checking] {item_name} | Status: {status_text}")
-
-                if item_name not in seen_ids:
+                if not cells:
                     continue
-                else:
-                    # 1. Move to the start of the file to read content
-                    f_out.seek(0)
-                    # 2. Read content to find the 'name'
-                    content = f_out.read()
-                    match_index = content.find(item_name)
-                    f_out.seek(match_index)
 
-                # Find the actual <a> tag element
-                link_element = link_container.find_element(By.TAG_NAME, "a")
+                # Column 1: Image, 2: Name, 3: Price, 4: Status, 5: Timestamp, 6: Link
+                # (Indices are 0-based: Name=1, Status=3, Link=4)
+                name_element = cells[1]
+                status_element = cells[3]
+                link_container = cells[4]
+                timestamp_element = cells[5]
 
-                # 4. Use your custom human_click function
-                human_click(driver, link_element)
+                item_name = name_element.text
+                status_text = status_element.text
+                update_timestamp = timestamp_element.text
 
-                # 5. Handle Tab Switching
-                # Wait for the new tab to open
-                wait.until(EC.number_of_windows_to_be(2))
+                timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
 
-                # Switch to the new tab
-                all_windows = driver.window_handles
-                for window in all_windows:
-                    if window != main_window_handle:
-                        driver.switch_to.window(window)
-                        break
+                # 3. Logic: Skip if strictly "PENNY"
+                if status_text != "PENNY" and not is_within_x_days(timestamp, update_timestamp, 1):
+                    print(f"\n[Checking] {item_name} | Status: {status_text}")
 
-                # --- RUN YOUR CHECK FUNCTION ---
-                # The driver is now focused on the new tab
-                try:
-                    new_hd_status = check_hd_item_tab_status(driver, name=item_name)
-                    print(f"   >>> Result: {new_hd_status}")
+                    if item_name not in seen_ids:
+                        continue
+                    else:
+                        # 1. Move to the start of the file to read content
+                        f_out.seek(0)
+                        # 2. Read content to find the 'name'
+                        content = f_out.read()
+                        match_index = content.find(item_name)
+                        f_out.seek(match_index)
 
-                    for ideal, current_deal in enumerate(deal_list):
-                        if current_deal['name'] == item_name:
-                            current_deal['hd_status'] = new_hd_status
-                            print(pad_row(current_deal), file=f_out)
+                    # Find the actual <a> tag element
+                    link_element = link_container.find_element(By.TAG_NAME, "a")
+
+                    # 4. Use your custom human_click function
+                    human_click(driver, link_element)
+
+                    # 5. Handle Tab Switching
+                    # Wait for the new tab to open
+                    wait.until(EC.number_of_windows_to_be(2))
+
+                    # Switch to the new tab
+                    all_windows = driver.window_handles
+                    for window in all_windows:
+                        if window != main_window_handle:
+                            driver.switch_to.window(window)
                             break
 
-                except Exception as e:
-                    print(f"   !!! Error checking status: {e}")
+                    # --- RUN YOUR CHECK FUNCTION ---
+                    # The driver is now focused on the new tab
+                    try:
+                        new_hd_status = check_hd_item_tab_status(driver, name=item_name)
+                        print(f"   >>> Result: {new_hd_status}")
 
-                # 6. Close tab and return to list
-                driver.close()
-                driver.switch_to.window(main_window_handle)
+                        for ideal, current_deal in enumerate(deal_list):
+                            if current_deal['name'] == item_name:
+                                current_deal['hd_status'] = new_hd_status
+                                print(pad_row(current_deal), file=f_out)
+                                break
 
-                # Small pause to ensure stability before next iteration
-                time.sleep(random.uniform(5, 11))
+                    except Exception as e:
+                        print(f"   !!! Error checking status: {e}")
 
-        except Exception as e:
-            print(f"Skipping row due to error: {e}")
-            # Ensure we are back on the main window if something failed mid-loop
-            if driver.current_window_handle != main_window_handle:
-                driver.switch_to.window(main_window_handle)
-            continue
+                    # 6. Close tab and return to list
+                    driver.close()
+                    driver.switch_to.window(main_window_handle)
+
+                    # Small pause to ensure stability before next iteration
+                    time.sleep(random.uniform(5, 11))
+
+            except Exception as e:
+                print(f"Skipping row due to error: {e}")
+                # Ensure we are back on the main window if something failed mid-loop
+                if driver.current_window_handle != main_window_handle:
+                    driver.switch_to.window(main_window_handle)
+                continue
 
 
 def main():
@@ -677,16 +685,7 @@ def main():
             time.sleep(30)
 
         driver = get_driver()
-
-        # Open file in append mode (or write if empty)
-        open_mode = 'a' if os.path.isfile(tsv_output_path) else 'w'
-
-        # Using 'r+' implies reading/writing, but standard append is safer for logs
-        # However, we want to maintain the header if new
-        with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
-            if open_mode == "w":
-                print(pad_row(FIELDNAMES), file=f_out)
-            process_tracker_items(driver, deal_list, f_out)
+        process_tracker_items(driver, deal_list, tsv_output_path)
 
 
 if __name__ == "__main__":
