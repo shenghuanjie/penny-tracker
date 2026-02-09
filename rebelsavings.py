@@ -643,6 +643,8 @@ def main():
 
         os.system('source update.sh')
 
+        time.sleep(30)
+
         driver = get_driver()
 
         # Open file in append mode (or write if empty)
