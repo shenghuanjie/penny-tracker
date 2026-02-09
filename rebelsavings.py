@@ -380,7 +380,12 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                         f_out.seek(match_index)
 
                     # Find the actual <a> tag element
-                    link_element = link_container.find_element(By.TAG_NAME, "a")
+                    try:
+                        link_element = link_container.find_element(By.XPATH, ".//a")
+                    except Exception:
+                        # Fallback: Sometimes finding by Tag Name is actually safer if XPath fails
+                        # or if the element is slightly different.
+                        link_element = link_container.find_element(By.TAG_NAME, "a")
 
                     # 4. Use your custom human_click function
                     human_click(driver, link_element)
