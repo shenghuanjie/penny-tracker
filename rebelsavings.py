@@ -1,5 +1,6 @@
 import datetime
 import shutil
+import subprocess
 import time
 import os
 import argparse
@@ -263,6 +264,37 @@ def check_hd_item_tab_status(driver, name=''):
         driver.switch_to.default_content()  # Safety switch back
 
     return HDStatus.PENNY
+
+
+def has_git_updates(repo_path="."):
+    """
+    Checks if there are any changes (modified, staged, or untracked files)
+    in the git repository.
+
+    Returns:
+        True: If there are changes.
+        False: If the working tree is clean.
+    """
+    try:
+        # --porcelain gives a machine-readable output.
+        # If the output is empty, there are no changes.
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_path,  # Run in the specific directory
+            capture_output=True,  # Capture the output so we can read it
+            text=True,  # return output as string instead of bytes
+            check=True  # Raise error if git command fails
+        )
+
+        # If stdout has content (after stripping whitespace), there are updates.
+        return bool(result.stdout.strip())
+
+    except subprocess.CalledProcessError:
+        print("Error: The current directory is not a git repository or git failed.")
+        return False
+    except FileNotFoundError:
+        print("Error: Git is not installed or not found in PATH.")
+        return False
 
 
 def get_driver():
@@ -641,7 +673,8 @@ def main():
 
         os.system('source update.sh')
 
-        time.sleep(30)
+        if has_git_updates():
+            time.sleep(30)
 
         driver = get_driver()
 
