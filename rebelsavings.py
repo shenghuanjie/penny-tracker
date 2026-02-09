@@ -314,8 +314,6 @@ def process_tracker_items(driver, deal_list, f_out):
 
             # Column 1: Image, 2: Name, 3: Price, 4: Status, 5: Timestamp, 6: Link
             # (Indices are 0-based: Name=1, Status=3, Link=4)
-            import pdb
-            pdb.set_trace()
             name_element = cells[1]
             status_element = cells[3]
             link_container = cells[4]
