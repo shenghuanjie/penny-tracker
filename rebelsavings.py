@@ -56,6 +56,8 @@ class RunningMode:
     REPORT = 'report'
     # clean followed by search and report
     ALL = 'all'
+    # check non-penny items
+    CHECK = 'check'
 
 
 class HDStatus:
@@ -69,7 +71,7 @@ class HDStatus:
 
 
 def generate_html_report(deals, output_path):
-    """Creates a visual HTML report with images and status colors."""
+    """Creates a visual HTML report with images, status colors, and timestamps."""
 
     # --- SORTING LOGIC ---
     # Define priority: Penny items first, then candidates, then clearance, then failures.
@@ -85,9 +87,6 @@ def generate_html_report(deals, output_path):
     }
 
     # Sort in-place
-    # 1. Get priority rank (default to 99 if unknown)
-    # 2. Sort by timestamp string (Ascending: Oldest -> Newest)
-    #    (To reverse time sort to Newest -> Oldest, change to: reverse=True or negation)
     deals.sort(key=lambda d: (
         status_priority.get(d.get('hd_status'), 99),
         d.get('original_timestamp', '')
@@ -115,7 +114,7 @@ def generate_html_report(deals, output_path):
 
     </style></head><body>
         <h2>Home Depot Clearance Report</h2>
-        <table><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Link</th></tr>"""
+        <table><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Updated At</th><th>Link</th></tr>"""
 
     for d in deals:
         status = d.get('hd_status', 'unchecked')
@@ -126,11 +125,16 @@ def generate_html_report(deals, output_path):
         price = d.get('price', 'N/A')
         url = d.get('url', '#')
 
+        # safely get updated_at, default to empty string if missing
+        timestamp = d.get('updated_at', '')
+
+        # Added timestamp cell before the Link cell
         html += f"""<tr>
             <td><img src="{image_src}"></td>
             <td>{name}</td>
             <td>{price}</td>
             <td class="{status}">{status.upper()}</td>
+            <td>{timestamp}</td>
             <td><a href="{url}" target="_blank">Link</a></td>
         </tr>"""
 
@@ -185,7 +189,7 @@ def navigate_ca_filters(driver):
         print(f"Filter navigation warning: {e}")
 
 
-def check_active_tab_status(driver, name=''):
+def check_hd_item_tab_status(driver, name=''):
     """
     Analyzes the CURRENT active tab (Home Depot) to determine status.
     Does NOT perform navigation (driver.get).
@@ -283,6 +287,107 @@ def pad_row(input_list, target_char_length=ROW_SIZE, pad_char=" "):
     return tsv_string
 
 
+def process_tracker_items(driver, deal_list, f_out):
+    seen_ids = [deal['name'] for deal in deal_list]
+    url = "https://shenghuanjie.github.io/penny-tracker/"
+    driver.get(url)
+
+    # 1. Wait for the table to load
+    wait = WebDriverWait(driver, 10)
+    wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+
+    # Store the ID of the main window so we can return to it
+    main_window_handle = driver.current_window_handle
+
+    # 2. Find all rows (skipping the first header row)
+    rows = driver.find_elements(By.XPATH, "//table//tr")[1:]
+
+    print(f"Found {len(rows)} items in the table.")
+
+    for row in rows:
+        try:
+            # Re-locate cells to avoid StaleElementReferenceException
+            cells = row.find_elements(By.TAG_NAME, "td")
+
+            if not cells:
+                continue
+
+            # Column 1: Image, 2: Name, 3: Price, 4: Status, 5: Timestamp, 6: Link
+            # (Indices are 0-based: Name=1, Status=3, Link=4)
+            import pdb
+            pdb.set_trace()
+            name_element = cells[1]
+            status_element = cells[3]
+            link_container = cells[4]
+            timestamp_element = cells[5]
+
+            item_name = name_element.text
+            status_text = status_element.text
+            update_timestamp = timestamp_element.text
+
+            timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
+
+            # 3. Logic: Skip if strictly "PENNY"
+            if status_text != "PENNY" and not is_within_x_days(timestamp, update_timestamp, 1):
+                print(f"\n[Checking] {item_name} | Status: {status_text}")
+
+                if item_name not in seen_ids:
+                    continue
+                else:
+                    # 1. Move to the start of the file to read content
+                    f_out.seek(0)
+                    # 2. Read content to find the 'name'
+                    content = f_out.read()
+                    match_index = content.find(item_name)
+                    f_out.seek(match_index)
+
+                # Find the actual <a> tag element
+                link_element = link_container.find_element(By.TAG_NAME, "a")
+
+                # 4. Use your custom human_click function
+                human_click(driver, link_element)
+
+                # 5. Handle Tab Switching
+                # Wait for the new tab to open
+                wait.until(EC.number_of_windows_to_be(2))
+
+                # Switch to the new tab
+                all_windows = driver.window_handles
+                for window in all_windows:
+                    if window != main_window_handle:
+                        driver.switch_to.window(window)
+                        break
+
+                # --- RUN YOUR CHECK FUNCTION ---
+                # The driver is now focused on the new tab
+                try:
+                    new_hd_status = check_hd_item_tab_status(driver, name=item_name)
+                    print(f"   >>> Result: {new_hd_status}")
+
+                    for ideal, current_deal in enumerate(deal_list):
+                        if current_deal['name'] == item_name:
+                            current_deal['hd_status'] = new_hd_status
+                            print(pad_row(current_deal), file=f_out)
+                            break
+
+                except Exception as e:
+                    print(f"   !!! Error checking status: {e}")
+
+                # 6. Close tab and return to list
+                driver.close()
+                driver.switch_to.window(main_window_handle)
+
+                # Small pause to ensure stability before next iteration
+                time.sleep(1)
+
+        except Exception as e:
+            print(f"Skipping row due to error: {e}")
+            # Ensure we are back on the main window if something failed mid-loop
+            if driver.current_window_handle != main_window_handle:
+                driver.switch_to.window(main_window_handle)
+            continue
+
+
 def main():
     parser = argparse.ArgumentParser(description="RebelSavings Scraper & Reporter")
     parser.add_argument("-n", "--max-items", type=int, default=None,
@@ -293,7 +398,7 @@ def main():
                         help="Folder to save the CSV and HTML report")
     parser.add_argument("-m", "--mode", choices=[
         RunningMode.CLEAN,
-        RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL],
+        RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL, RunningMode.CHECK],
                         default=RunningMode.ALL,
                         help="Running mode.")
 
@@ -373,14 +478,25 @@ def main():
                     new_items_found_in_this_pass = 0
 
                     for row in current_rows:
-                        if len(deal_list) >= max_items: break
+
+                        if len(deal_list) >= max_items:
+                            break
 
                         try:
                             name_elem = row.find_element(By.CLASS_NAME, "title-column")
                             name = name_elem.text.splitlines()[0].strip()
 
                             if name in seen_ids:
-                                continue
+                                duplicated_item = True
+                                print(f'Duplicate item found: {name}')
+                                # 1. Move to the start of the file to read content
+                                f_out.seek(0)
+                                # 2. Read content to find the 'name'
+                                content = f_out.read()
+                                match_index = content.find(name)
+                                f_out.seek(match_index)
+                            else:
+                                duplicated_item = False
 
                             # --- 1. Get Rebel Data ---
                             price = row.find_element(By.XPATH, "./td[3]").text.strip()
@@ -428,7 +544,7 @@ def main():
                             try:
                                 # No driver.get() needed; the click triggered the load.
                                 # Perform verification on the active tab
-                                hd_status = check_active_tab_status(driver, name=name)
+                                hd_status = check_hd_item_tab_status(driver, name=name)
                             except Exception as e:
                                 print(f"   Error checking tab: {e}")
                                 hd_status = HDStatus.ERROR
@@ -462,10 +578,13 @@ def main():
 
                             print(pad_row(current_deal), file=f_out)
                             f_out.flush()  # Ensure it's written immediately
+                            # always jump back to file end
+                            f_out.seek(0, 2)
 
-                            deal_list.append(current_deal)
-                            seen_ids.add(name)
-                            new_items_found_in_this_pass += 1
+                            if not duplicated_item:
+                                deal_list.append(current_deal)
+                                seen_ids.add(name)
+                                new_items_found_in_this_pass += 1
 
                             # Anti-detection pause between tabs
                             if hd_status == HDStatus.BLOCKED:
@@ -475,7 +594,7 @@ def main():
                             else:
                                 time.sleep(random.uniform(2, 5))
 
-                        except Exception as e:
+                        except Exception as e1:
                             # Recovery if something broke
                             try:
                                 if len(driver.window_handles) > 1:
@@ -485,9 +604,9 @@ def main():
                                             driver.switch_to.window(handle)
                                             driver.close()
                                     driver.switch_to.window(main_window)
-                            except:
+                            except Exception as e2:
                                 pass
-                            print(f"Skipping row due to error: {e}")
+                            print(f"Skipping row due to error: {e1}\n{e2}")
                             continue
 
                     # --- End of Pass Logic ---
@@ -519,6 +638,22 @@ def main():
     elif args.mode == RunningMode.REPORT:
         print("Generating report from existing TSV...")
         generate_html_report(deal_list, report_path)
+
+    elif args.mode == RunningMode.CHECK:
+
+        os.system('source update.sh')
+
+        driver = get_driver()
+
+        # Open file in append mode (or write if empty)
+        open_mode = 'a' if os.path.isfile(tsv_output_path) else 'w'
+
+        # Using 'r+' implies reading/writing, but standard append is safer for logs
+        # However, we want to maintain the header if new
+        with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
+            if open_mode == "w":
+                print(pad_row(FIELDNAMES), file=f_out)
+            process_tracker_items(driver, deal_list, f_out)
 
 
 if __name__ == "__main__":
