@@ -638,6 +638,7 @@ def main():
                                 time.sleep(random.uniform(2, 5))
 
                         except Exception as e1:
+                            e2 = ""
                             # Recovery if something broke
                             try:
                                 if len(driver.window_handles) > 1:
