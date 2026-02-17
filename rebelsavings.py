@@ -9,6 +9,11 @@ import random
 import undetected_chromedriver as uc
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    MoveTargetOutOfBoundsException,
+    StaleElementReferenceException
+)
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -22,31 +27,53 @@ BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
 
 
 def human_click(driver, element):
-    # 1. Get the element's size to calculate safe click boundaries
-    size = element.size
-    width = size['width']
-    height = size['height']
+    """
+    Attempts a human-like click. If it fails, forces a JavaScript click.
+    """
+    try:
+        # --- PREPARATION ---
+        # Ensure element is in the viewport.
+        # 'block: center' prevents it from being hidden behind sticky headers.
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+        time.sleep(random.uniform(0.2, 0.5))  # Let the scroll settle
 
-    # 2. Calculate a random offset (avoiding the very edges)
-    # We divide by 4 to keep the click safely near the middle area, but not exact center
-    rand_x = random.randint(-int(width / 4), int(width / 4))
-    rand_y = random.randint(-int(height / 4), int(height / 4))
+        # --- ATTEMPT 1: HUMAN CLICK ---
+        size = element.size
+        width = size['width']
+        height = size['height']
 
-    # 3. Setup the action chain
-    actions = ActionChains(driver)
+        # Calculate offset (divide by 4 to stay safe, avoid edges)
+        rand_x = random.randint(-int(width / 4), int(width / 4))
+        rand_y = random.randint(-int(height / 4), int(height / 4))
 
-    # 4. Move to the element with the random offset
-    actions.move_to_element_with_offset(element, rand_x, rand_y)
+        actions = ActionChains(driver)
+        actions.move_to_element_with_offset(element, rand_x, rand_y)
 
-    # 5. "Hesitation" - Humans pause briefly before clicking
-    time.sleep(random.uniform(0.2, 0.7))
+        # Hesitation
+        time.sleep(random.uniform(0.2, 0.7))
 
-    # 6. Perform the click
-    actions.click()
-    actions.perform()
+        actions.click()
+        actions.perform()
 
-    # 7. Post-click pause (humans don't react instantly after clicking)
-    time.sleep(random.uniform(0.5, 1.5))
+        # Post-click pause
+        time.sleep(random.uniform(0.5, 1.5))
+
+    except (ElementClickInterceptedException, MoveTargetOutOfBoundsException,
+            StaleElementReferenceException) as e:
+        print(f"Human click failed ({type(e).__name__}). Executing Backup Plan...")
+
+        # --- ATTEMPT 2: BACKUP PLAN (JS Click) ---
+        # This bypasses the UI layer and forces the click event on the DOM.
+        # It is 100% reliable but less 'human-like'.
+        driver.execute_script("arguments[0].click();", element)
+
+        # Sleep to mimic the time the human click would have taken
+        time.sleep(random.uniform(0.5, 1.0))
+
+    except Exception as e:
+        # Catch-all for other weird driver errors
+        print(f"Unexpected error: {e}. Trying Backup Plan...")
+        driver.execute_script("arguments[0].click();", element)
 
 
 class RunningMode:
