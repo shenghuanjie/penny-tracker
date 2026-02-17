@@ -563,8 +563,6 @@ def main():
         driver = get_driver()
         try:
             seen_ids = set(deal['name'] for deal in deal_list)
-            import pdb
-            pdb.set_trace()
             max_items = args.max_items if args.max_items is not None else float('inf')
 
             print(f"Starting item collection & verification (Max: {max_items})...")
