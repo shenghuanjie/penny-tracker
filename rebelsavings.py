@@ -188,6 +188,8 @@ def generate_html_report(deals, output_path):
 
 
 def is_within_x_days(timestamp1, timestamp2, days=3):
+    if timestamp1 is None or timestamp2 is None:
+        return True
     try:
         d1 = datetime.datetime.strptime(timestamp1, TIMESTAMP_FORMAT)
         d2 = datetime.datetime.strptime(timestamp2, TIMESTAMP_FORMAT)
@@ -433,10 +435,15 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                         match_index = content.find(item_name)
                         f_out.seek(match_index)
                         line_start_index = f_out.tell()
+                        # not sure why I need to call it twice
+                        _ = f_out.readline()
                         data = f_out.readline()
                         parts = data.strip().split("\t")
-                        update_timestamp = parts[FIELDNAMES.index('updated_at')]
                         current_timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
+                        try:
+                            update_timestamp = parts[FIELDNAMES.index('updated_at')]
+                        except IndexError:
+                            update_timestamp = None
                         if is_within_x_days(current_timestamp, update_timestamp, 1):
                             print(f'Already updated earlier today. Skipping update for {item_name}')
                             f_out.seek(line_start_index)
