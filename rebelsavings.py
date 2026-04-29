@@ -1,4 +1,5 @@
 import datetime
+import re
 import shutil
 import subprocess
 import time
@@ -9,6 +10,7 @@ import random
 import undetected_chromedriver as uc
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -19,6 +21,8 @@ FIELDNAMES = ["name", "price", "url", "image", "original_timestamp", "hd_status"
 NEWLINE = '\n'
 TSV_FILENAME = "rebel_final_report.tsv"
 BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
+DEFAULT_ZIP = "94538"
+REBEL_SAVINGS_DEAL_URL = "https://www.rebelsavings.com/home-depot?zip={zip}"
 
 
 def human_click(driver, element):
@@ -200,37 +204,106 @@ def is_within_x_days(timestamp1, timestamp2, days=3):
 
 
 def navigate_ca_filters(driver):
-    """Step-by-step navigation for CA state and specific cities."""
-    wait = WebDriverWait(driver, 20)
-    print("Applying CA State and City filters...")
+    """
+    Navigate to the RebelSavings Home Depot deal page with a ZIP code.
+    The old state/city filter UI no longer exists — the site now uses
+    a retailer + ZIP URL pattern: /home-depot?zip=XXXXX
+    """
+    # No longer needed — navigation is handled by direct URL in the main loop.
+    # Kept as a no-op for backward compatibility.
+    pass
 
-    # Select CA
+
+def extract_sku_from_url(hd_url):
+    """
+    Extract the product SKU/model number from a Home Depot URL.
+    HD URLs typically end with /XXXXXXXXX (a numeric ID).
+    e.g. https://www.homedepot.com/p/Some-Product-Name/123456789
+    """
+    # Match the numeric ID at the end of the URL path
+    match = re.search(r'/(\d{6,12})(?:\?|$|#)', hd_url)
+    if match:
+        return match.group(1)
+    # Fallback: try to get the last path segment
+    match = re.search(r'/p/[^/]+/(\d+)', hd_url)
+    if match:
+        return match.group(1)
+    return None
+
+
+def navigate_hd_via_search(driver, hd_url, name=''):
+    """
+    Navigate to a Home Depot product page by searching for its SKU
+    on homedepot.com instead of using a direct link. This avoids
+    bot detection that triggers on direct product URL access.
+    """
+    sku = extract_sku_from_url(hd_url)
+    if not sku:
+        print(f"   > Could not extract SKU from URL: {hd_url}")
+        print(f"   > Falling back to direct navigation")
+        driver.get(hd_url)
+        time.sleep(random.uniform(3, 5))
+        return
+
+    print(f"   > Searching HD for SKU: {sku}")
+
+    # If we're not already on homedepot.com, navigate there first
+    if "homedepot.com" not in driver.current_url:
+        driver.get("https://www.homedepot.com")
+        time.sleep(random.uniform(3, 6))
+
+        # Check for immediate block
+        if "Access Denied" in driver.title:
+            print("   > Blocked on HD homepage. Waiting...")
+            time.sleep(random.uniform(30, 60))
+            driver.get("https://www.homedepot.com")
+            time.sleep(random.uniform(3, 6))
+
+    wait = WebDriverWait(driver, 15)
+
     try:
-        state_btn = wait.until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'All States')]")))
-        state_btn.click()
-        wait.until(EC.element_to_be_clickable((By.XPATH, "//label[contains(., 'CA')]"))).click()
-        state_btn.click()
-        time.sleep(2)
+        # Find the search box
+        search_box = wait.until(EC.presence_of_element_located(
+            (By.ID, "typeahead-search-field-input")))
 
-        # Select Cities
-        city_btn = wait.until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'All Cities')]")))
-        city_btn.click()
-        cities = ["Campbell", "Fremont", "Hayward", "Milpitas", "San Jose", "Sunnyvale",
-                  "Union City"]
-        for city in cities:
+        # Click to focus
+        search_box.click()
+        time.sleep(random.uniform(0.5, 1.0))
+
+        # Clear existing text
+        search_box.send_keys(Keys.CONTROL + "a")
+        time.sleep(0.1)
+        search_box.send_keys(Keys.BACKSPACE)
+        time.sleep(random.uniform(0.3, 0.6))
+
+        # Type the SKU one character at a time (human-like)
+        for char in sku:
+            search_box.send_keys(char)
+            time.sleep(random.uniform(0.05, 0.15))
+
+        time.sleep(random.uniform(0.5, 1.0))
+        search_box.send_keys(Keys.ENTER)
+
+        # Wait for results to load
+        time.sleep(random.uniform(4, 7))
+
+        # HD often redirects directly to the product page for exact SKU matches.
+        # If we're on a search results page, click the first result.
+        if "/s/" in driver.current_url or "Ntt=" in driver.current_url:
             try:
-                city_label = wait.until(
-                    EC.element_to_be_clickable((By.XPATH, f"//label[contains(., '{city}')]")))
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", city_label)
-                city_label.click()
-            except:
-                continue
-        city_btn.click()
-        time.sleep(2)
+                # Look for product link in search results
+                product_link = wait.until(EC.element_to_be_clickable(
+                    (By.XPATH, "//a[contains(@href, '/p/')]")))
+                driver.execute_script("arguments[0].click();", product_link)
+                time.sleep(random.uniform(3, 5))
+            except Exception:
+                print(f"   > No product found in search results for SKU: {sku}")
+
     except Exception as e:
-        print(f"Filter navigation warning: {e}")
+        print(f"   > Search navigation failed: {e}")
+        print(f"   > Falling back to direct navigation")
+        driver.get(hd_url)
+        time.sleep(random.uniform(3, 5))
 
 
 def check_hd_item_tab_status(driver, name=''):
@@ -450,32 +523,23 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                             continue
                         else:
                             f_out.seek(line_start_index)
-                    # Find the actual <a> tag element
+                    # Extract the HD URL from the link element
                     try:
                         link_element = link_container.find_element(By.XPATH, ".//a")
                     except Exception:
-                        # Fallback: Sometimes finding by Tag Name is actually safer if XPath fails
-                        # or if the element is slightly different.
                         link_element = link_container.find_element(By.TAG_NAME, "a")
 
-                    # 4. Use your custom human_click function
-                    human_click(driver, link_element)
+                    hd_url = link_element.get_attribute("href")
+                    print(f"   HD URL: {hd_url}")
 
-                    # 5. Handle Tab Switching
-                    # Wait for the new tab to open
-                    wait.until(EC.number_of_windows_to_be(2))
-                    print("New window opened.")
-
-                    # Switch to the new tab
-                    all_windows = driver.window_handles
-                    for window in all_windows:
-                        if window != main_window_handle:
-                            driver.switch_to.window(window)
-                            break
+                    # Open a new tab and navigate via search
+                    driver.execute_script("window.open('');")
+                    driver.switch_to.window(driver.window_handles[-1])
 
                     # --- RUN YOUR CHECK FUNCTION ---
-                    # The driver is now focused on the new tab
                     try:
+                        navigate_hd_via_search(driver, hd_url, name=item_name)
+                        time.sleep(random.uniform(2, 4))
                         new_hd_status = check_hd_item_tab_status(driver, name=item_name)
                         print(f"   >>> Result: {new_hd_status}")
 
@@ -488,12 +552,12 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                     except Exception as e:
                         print(f"   !!! Error checking status: {e}")
 
-                    # 6. Close tab and return to list
+                    # Close tab and return to list
                     driver.close()
                     driver.switch_to.window(main_window_handle)
 
-                    # Small pause to ensure stability before next iteration
-                    time.sleep(random.uniform(5, 11))
+                    # Longer pause between items to avoid detection
+                    time.sleep(random.uniform(8, 15))
 
             except Exception as e:
                 print(f"Skipping row due to error: {e}")
@@ -511,6 +575,8 @@ def main():
                         default=TSV_FILENAME, help="Path to existing CSV")
     parser.add_argument("-o", "--output-dir", type=str, default=".",
                         help="Folder to save the CSV and HTML report")
+    parser.add_argument("-z", "--zip", type=str, default=DEFAULT_ZIP,
+                        help="ZIP code for RebelSavings location filter (default: 94538)")
     parser.add_argument("-m", "--mode", choices=[
         RunningMode.CLEAN,
         RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL, RunningMode.CHECK],
@@ -574,8 +640,13 @@ def main():
 
             print(f"Starting item collection & verification (Max: {max_items})...")
 
-            driver.get("https://www.rebelsavings.com/")
-            navigate_ca_filters(driver)
+            rebel_url = REBEL_SAVINGS_DEAL_URL.format(zip=args.zip)
+            print(f"Navigating to: {rebel_url}")
+            driver.get(rebel_url)
+            # Wait for the React app to load and render deal rows
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
+            print("Deal page loaded successfully.")
             driver.execute_script("document.body.style.zoom='75%'")
 
             # Open file in append mode (or write if empty)
@@ -653,46 +724,29 @@ def main():
                             close_btn = wait_menu.until(
                                 EC.element_to_be_clickable((By.CLASS_NAME, "close-menu-btn")))
 
-                            hd_link_elem = wait_menu.until(EC.element_to_be_clickable(
+                            hd_link_elem = wait_menu.until(EC.presence_of_element_located(
                                 (By.XPATH, "//div[contains(@class, 'detail-overlay-content')]//a")))
                             hd_url = hd_link_elem.get_attribute("href")
+                            print(f"   HD URL: {hd_url}")
 
-                            # Click for Modal to get Link
-                            time.sleep(random.uniform(1, 3))
+                            # Close the modal first (before opening HD tab)
+                            close_btn.click()
+                            time.sleep(random.uniform(0.5, 1.0))
 
-                            # 1. Capture current window handles to detect the new one
-                            old_handles = driver.window_handles
-
-                            # 2. CLICK the link (Using JS is often more reliable in modals)
-                            print(f"   Clicking link for: {name[:20]}...")
-                            # driver.execute_script("arguments[0].click();", hd_link_elem)
-                            human_click(driver, hd_link_elem)
-
-                            # 3. Wait for the new tab to appear in the handle list
-                            WebDriverWait(driver, 10).until(EC.new_window_is_opened(old_handles))
-
-                            # --- 5. SWITCH TO NEW TAB & VERIFY ---
-                            # Switch to the newest handle (the one just opened)
+                            # Open a new tab and navigate via search
+                            driver.execute_script("window.open('');")
                             driver.switch_to.window(driver.window_handles[-1])
 
                             try:
-                                # No driver.get() needed; the click triggered the load.
-                                # Perform verification on the active tab
+                                navigate_hd_via_search(driver, hd_url, name=name)
+                                time.sleep(random.uniform(2, 4))
                                 hd_status = check_hd_item_tab_status(driver, name=name)
                             except Exception as e:
                                 print(f"   Error checking tab: {e}")
                                 hd_status = HDStatus.ERROR
 
-                            # Close the HD tab
+                            # Close the HD tab and switch back
                             driver.close()
-
-                            # 4. Close Modal on the main page (cleanup)
-                            driver.switch_to.window(driver.window_handles[0])
-                            close_btn.click()
-                            wait_menu.until(EC.invisibility_of_element_located(
-                                (By.CLASS_NAME, "close-menu-btn")))
-
-                            # Switch back to RebelSavings
                             driver.switch_to.window(main_window)
                             # -------------------------------------
 
