@@ -737,6 +737,9 @@ def main():
     backuptsv_output_path = os.path.join(args.output_dir, BACKUP_TSV_FILENAME)
 
     # --- LOAD EXISTING DATA ---
+    # Minimum number of fields required to parse a row (excluding padding)
+    min_fields = len(FIELDNAMES) - 1  # padding column may be stripped
+
     if os.path.isfile(args.from_tsv):
         print(f"Reading data from {args.from_tsv}...")
         try:
@@ -744,7 +747,10 @@ def main():
                 f_out.readline()  # skip header
                 for row in f_out:
                     parts = row.strip().split("\t")
-                    if len(parts) >= len(FIELDNAMES):
+                    if len(parts) >= min_fields:
+                        # Pad parts to match FIELDNAMES length if padding was stripped
+                        while len(parts) < len(FIELDNAMES):
+                            parts.append("")
                         row_dict = dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)]))
                         deal_list.append(row_dict)
         except Exception as e:
