@@ -615,6 +615,9 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
 
         print(f"Found {len(rows)} items in the table.")
 
+        consecutive_blocks = 0
+        max_consecutive_blocks = 3
+
         for row in rows:
             try:
                 # Re-locate cells to avoid StaleElementReferenceException
@@ -636,69 +639,89 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
 
                 timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
 
-                # 3. Logic: Skip if strictly "PENNY"
-                if status_text != "PENNY" and not is_within_x_days(timestamp, update_timestamp, 1):
-                    print(f"\n[Checking] {item_name} | Status: {status_text}")
+                # Skip items already confirmed as PENNY
+                if status_text == "PENNY":
+                    continue
 
-                    if item_name not in seen_ids:
-                        continue
-                    else:
-                        # 1. Move to the start of the file to read content
-                        f_out.seek(0)
-                        # 2. Read content to find the 'name'
-                        content = f_out.read()
-                        match_index = content.find(item_name)
-                        f_out.seek(match_index)
-                        line_start_index = f_out.tell()
-                        # not sure why I need to call it twice
-                        _ = f_out.readline()
-                        data = f_out.readline()
-                        parts = data.strip().split("\t")
-                        current_timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
-                        try:
-                            update_timestamp = parts[FIELDNAMES.index('updated_at')]
-                        except IndexError:
-                            update_timestamp = None
-                        if is_within_x_days(current_timestamp, update_timestamp, 1):
-                            print(f'Already updated earlier today. Skipping update for {item_name}')
-                            f_out.seek(line_start_index)
-                            continue
-                        else:
-                            f_out.seek(line_start_index)
-                    # Extract the HD URL from the link element
-                    try:
-                        link_element = link_container.find_element(By.XPATH, ".//a")
-                    except Exception:
-                        link_element = link_container.find_element(By.TAG_NAME, "a")
+                # Skip items updated within the last 24 hours
+                if is_within_x_days(timestamp, update_timestamp, 1):
+                    continue
 
-                    hd_url = link_element.get_attribute("href")
-                    print(f"   HD URL: {hd_url}")
+                print(f"\n[Checking] {item_name} | Status: {status_text}")
 
-                    # Open a new tab and navigate via search
-                    driver.execute_script("window.open('');")
-                    driver.switch_to.window(driver.window_handles[-1])
+                if item_name not in seen_ids:
+                    continue
 
-                    # --- RUN YOUR CHECK FUNCTION ---
-                    try:
-                        navigate_hd_via_search(driver, hd_url, name=item_name)
-                        time.sleep(random.uniform(2, 4))
-                        new_hd_status = check_hd_item_tab_status(driver, name=item_name)
-                        print(f"   >>> Result: {new_hd_status}")
+                # Check TSV for more recent update
+                f_out.seek(0)
+                content = f_out.read()
+                match_index = content.find(item_name)
+                if match_index == -1:
+                    continue
+                f_out.seek(match_index)
+                line_start_index = f_out.tell()
+                _ = f_out.readline()
+                data = f_out.readline()
+                parts = data.strip().split("\t")
+                current_timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
+                try:
+                    tsv_update_timestamp = parts[FIELDNAMES.index('updated_at')]
+                except IndexError:
+                    tsv_update_timestamp = None
+                if is_within_x_days(current_timestamp, tsv_update_timestamp, 1):
+                    print(f'Already updated earlier today. Skipping update for {item_name}')
+                    f_out.seek(line_start_index)
+                    continue
+                else:
+                    f_out.seek(line_start_index)
 
-                        for ideal, current_deal in enumerate(deal_list):
-                            if current_deal['name'] == item_name:
-                                current_deal['hd_status'] = new_hd_status
-                                print(pad_row(current_deal), file=f_out)
-                                break
+                # Extract the HD URL from the link element
+                try:
+                    link_element = link_container.find_element(By.XPATH, ".//a")
+                except Exception:
+                    link_element = link_container.find_element(By.TAG_NAME, "a")
 
-                    except Exception as e:
-                        print(f"   !!! Error checking status: {e}")
+                hd_url = link_element.get_attribute("href")
+                print(f"   HD URL: {hd_url}")
 
-                    # Close tab and return to list
-                    driver.close()
-                    driver.switch_to.window(main_window_handle)
+                # Open a new tab and navigate via search
+                driver.execute_script("window.open('');")
+                driver.switch_to.window(driver.window_handles[-1])
 
-                    # Longer pause between items to avoid detection
+                # --- RUN YOUR CHECK FUNCTION ---
+                new_hd_status = HDStatus.ERROR
+                try:
+                    navigate_hd_via_search(driver, hd_url, name=item_name)
+                    time.sleep(random.uniform(2, 4))
+                    new_hd_status = check_hd_item_tab_status(driver, name=item_name)
+                    print(f"   >>> Result: {new_hd_status}")
+
+                    for ideal, current_deal in enumerate(deal_list):
+                        if current_deal['name'] == item_name:
+                            current_deal['hd_status'] = new_hd_status
+                            print(pad_row(current_deal), file=f_out)
+                            break
+
+                except Exception as e:
+                    print(f"   !!! Error checking status: {e}")
+
+                # Close tab and return to list
+                driver.close()
+                driver.switch_to.window(main_window_handle)
+
+                # Track consecutive blocks
+                if new_hd_status == HDStatus.BLOCKED:
+                    consecutive_blocks += 1
+                    print(f"!!! BLOCKED ({consecutive_blocks}/{max_consecutive_blocks}). Clearing cookies...")
+                    clear_hd_cookies(driver)
+                    if consecutive_blocks >= max_consecutive_blocks:
+                        print(f"!!! {max_consecutive_blocks} consecutive blocks. Stopping to avoid IP ban.")
+                        break
+                    sleep_time = random.randint(60, 120)
+                    print(f"   Sleeping {sleep_time}s before next item...")
+                    time.sleep(sleep_time)
+                else:
+                    consecutive_blocks = 0  # Reset on success
                     time.sleep(random.uniform(8, 15))
 
             except Exception as e:
@@ -811,6 +834,8 @@ def main():
 
                 max_patience = 3
                 current_patience = 0
+                consecutive_blocks = 0
+                max_consecutive_blocks = 3
                 main_window = driver.current_window_handle  # Store RebelSavings Handle
 
                 while len(deal_list) < max_items:
@@ -841,6 +866,17 @@ def main():
                                 line_start_index = f_out.tell()
                                 data = f_out.readline()
                                 parts = data.strip().split("\t")
+
+                                # Skip items already confirmed as penny
+                                try:
+                                    existing_status = parts[FIELDNAMES.index('hd_status')]
+                                except IndexError:
+                                    existing_status = ""
+                                if existing_status == HDStatus.PENNY:
+                                    print(f'Already confirmed PENNY. Skipping {name}')
+                                    f_out.seek(line_start_index)
+                                    continue
+
                                 update_timestamp = parts[FIELDNAMES.index('updated_at')]
                                 current_timestamp = datetime.datetime.fromtimestamp(
                                     time.time()).strftime(TIMESTAMP_FORMAT)
@@ -927,17 +963,22 @@ def main():
 
                             # Anti-detection pause between items
                             if hd_status == HDStatus.BLOCKED:
-                                print("!!! BLOCKED DETECTED. Clearing cookies and cooling down...")
+                                consecutive_blocks += 1
+                                print(f"!!! BLOCKED DETECTED ({consecutive_blocks}/{max_consecutive_blocks}). Clearing cookies and cooling down...")
                                 # Switch to HD tab if it exists, clear cookies there
                                 if len(driver.window_handles) > 1:
                                     driver.switch_to.window(driver.window_handles[-1])
                                     clear_hd_cookies(driver)
                                     driver.close()
                                     driver.switch_to.window(main_window)
+                                if consecutive_blocks >= max_consecutive_blocks:
+                                    print(f"!!! {max_consecutive_blocks} consecutive blocks. Stopping to avoid IP ban.")
+                                    break
                                 sleep_time = random.randint(60, 120)
                                 print(f"   Sleeping {sleep_time}s before next item...")
                                 time.sleep(sleep_time)
                             else:
+                                consecutive_blocks = 0  # Reset on success
                                 time.sleep(random.uniform(5, 10))
 
                         except Exception as e1:
@@ -955,6 +996,10 @@ def main():
                                 pass
                             print(f"Skipping row due to error: {e1}\n{e2}")
                             continue
+
+                    # --- Check if we hit the block limit ---
+                    if consecutive_blocks >= max_consecutive_blocks:
+                        break
 
                     # --- End of Pass Logic ---
                     if new_items_found_in_this_pass > 0:
