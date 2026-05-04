@@ -236,6 +236,8 @@ def navigate_hd_via_search(driver, hd_url, name=''):
     Navigate to a Home Depot product page by searching for its SKU
     on homedepot.com instead of using a direct link. This avoids
     bot detection that triggers on direct product URL access.
+
+    If blocked, clears Akamai cookies, waits, and retries once.
     """
     sku = extract_sku_from_url(hd_url)
     if not sku:
@@ -247,63 +249,86 @@ def navigate_hd_via_search(driver, hd_url, name=''):
 
     print(f"   > Searching HD for SKU: {sku}")
 
-    # If we're not already on homedepot.com, navigate there first
-    if "homedepot.com" not in driver.current_url:
-        driver.get("https://www.homedepot.com")
-        time.sleep(random.uniform(3, 6))
+    max_retries = 2
+    for attempt in range(max_retries):
+        # If we're not on homedepot.com or we're on a block page, go to homepage
+        if "homedepot.com" not in driver.current_url or is_hd_blocked(driver):
+            if attempt > 0:
+                print(f"   > Retry {attempt}: clearing cookies and waiting...")
+                clear_hd_cookies(driver)
+                wait_time = random.uniform(30, 60)
+                print(f"   > Waiting {wait_time:.0f}s before retry...")
+                time.sleep(wait_time)
 
-        # Check for immediate block
-        if "Access Denied" in driver.title:
-            print("   > Blocked on HD homepage. Waiting...")
-            time.sleep(random.uniform(30, 60))
             driver.get("https://www.homedepot.com")
-            time.sleep(random.uniform(3, 6))
+            time.sleep(random.uniform(4, 7))
 
-    wait = WebDriverWait(driver, 15)
+            if is_hd_blocked(driver):
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    print(f"   > Still blocked after {max_retries} attempts")
+                    return
 
-    try:
-        # Find the search box
-        search_box = wait.until(EC.presence_of_element_located(
-            (By.ID, "typeahead-search-field-input")))
+        wait = WebDriverWait(driver, 15)
 
-        # Click to focus
-        search_box.click()
-        time.sleep(random.uniform(0.5, 1.0))
+        try:
+            # Find the search box
+            search_box = wait.until(EC.presence_of_element_located(
+                (By.ID, "typeahead-search-field-input")))
 
-        # Clear existing text
-        search_box.send_keys(Keys.CONTROL + "a")
-        time.sleep(0.1)
-        search_box.send_keys(Keys.BACKSPACE)
-        time.sleep(random.uniform(0.3, 0.6))
+            # Click to focus
+            search_box.click()
+            time.sleep(random.uniform(0.5, 1.0))
 
-        # Type the SKU one character at a time (human-like)
-        for char in sku:
-            search_box.send_keys(char)
-            time.sleep(random.uniform(0.05, 0.15))
+            # Clear existing text
+            search_box.send_keys(Keys.CONTROL + "a")
+            time.sleep(0.1)
+            search_box.send_keys(Keys.BACKSPACE)
+            time.sleep(random.uniform(0.3, 0.6))
 
-        time.sleep(random.uniform(0.5, 1.0))
-        search_box.send_keys(Keys.ENTER)
+            # Type the SKU one character at a time (human-like)
+            for char in sku:
+                search_box.send_keys(char)
+                time.sleep(random.uniform(0.05, 0.15))
 
-        # Wait for results to load
-        time.sleep(random.uniform(4, 7))
+            time.sleep(random.uniform(0.5, 1.0))
+            search_box.send_keys(Keys.ENTER)
 
-        # HD often redirects directly to the product page for exact SKU matches.
-        # If we're on a search results page, click the first result.
-        if "/s/" in driver.current_url or "Ntt=" in driver.current_url:
-            try:
-                # Look for product link in search results
-                product_link = wait.until(EC.element_to_be_clickable(
-                    (By.XPATH, "//a[contains(@href, '/p/')]")))
-                driver.execute_script("arguments[0].click();", product_link)
+            # Wait for results to load
+            time.sleep(random.uniform(4, 7))
+
+            # Check if we got blocked after search
+            if is_hd_blocked(driver):
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    print(f"   > Blocked after search on final attempt")
+                    return
+
+            # HD often redirects directly to the product page for exact SKU matches.
+            # If we're on a search results page, click the first result.
+            if "/s/" in driver.current_url or "Ntt=" in driver.current_url:
+                try:
+                    product_link = wait.until(EC.element_to_be_clickable(
+                        (By.XPATH, "//a[contains(@href, '/p/')]")))
+                    driver.execute_script("arguments[0].click();", product_link)
+                    time.sleep(random.uniform(3, 5))
+                except Exception:
+                    print(f"   > No product found in search results for SKU: {sku}")
+
+            # Success — break out of retry loop
+            return
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"   > Search attempt {attempt + 1} failed: {e}")
+                continue
+            else:
+                print(f"   > Search navigation failed after {max_retries} attempts: {e}")
+                print(f"   > Falling back to direct navigation")
+                driver.get(hd_url)
                 time.sleep(random.uniform(3, 5))
-            except Exception:
-                print(f"   > No product found in search results for SKU: {sku}")
-
-    except Exception as e:
-        print(f"   > Search navigation failed: {e}")
-        print(f"   > Falling back to direct navigation")
-        driver.get(hd_url)
-        time.sleep(random.uniform(3, 5))
 
 
 def check_hd_item_tab_status(driver, name=''):
@@ -423,7 +448,6 @@ def get_driver():
     prefs = {
         "profile.default_content_setting_values.popups": 1,
         "profile.default_content_setting_values.notifications": 2,
-        # Optional: block notifications while we're at it
     }
     options.add_experimental_option("prefs", prefs)
 
@@ -432,6 +456,124 @@ def get_driver():
     # Force version 138 to match your browser if needed, else remove version_main
     driver = uc.Chrome(options=options, version_main=138)
     return driver
+
+
+def is_hd_blocked(driver):
+    """Check if Home Depot has blocked the current page."""
+    try:
+        if "Access Denied" in driver.title:
+            return True
+        # Akamai bot manager "Oops" page
+        error_msgs = driver.find_elements(
+            By.XPATH, "//div[@class='msg' and contains(text(), 'Something went wrong')]")
+        if error_msgs:
+            return True
+        # Also check for the error page title pattern
+        if "Error Page" in driver.title:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def clear_hd_cookies(driver):
+    """Clear Akamai bot manager cookies to reset detection state."""
+    bot_cookies = ['_bman_adv', 'bm_s', 'bm_so', 'bm_ss', 'bm_sv', 'bm_sz', '_abck', 'bm_mi']
+    for name in bot_cookies:
+        try:
+            driver.delete_cookie(name)
+        except Exception:
+            pass
+    # Also try via JS for domain-level cookies
+    driver.execute_script("""
+        ['_bman_adv','bm_s','bm_so','bm_ss','bm_sv','bm_sz','_abck','bm_mi'].forEach(n => {
+            document.cookie = n + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=.homedepot.com';
+            document.cookie = n + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=.www.homedepot.com';
+        });
+    """)
+
+
+def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP):
+    """
+    Establish a trusted session on homedepot.com by visiting the homepage,
+    setting the ZIP code, and browsing briefly. This builds up the Akamai
+    sensor data that makes subsequent requests look legitimate.
+    """
+    print(f"Warming up Home Depot session (ZIP: {zip_code})...")
+
+    driver.get("https://www.homedepot.com")
+    time.sleep(random.uniform(4, 7))
+
+    if is_hd_blocked(driver):
+        print("   > Blocked on initial load. Clearing cookies and retrying...")
+        clear_hd_cookies(driver)
+        time.sleep(random.uniform(10, 20))
+        driver.get("https://www.homedepot.com")
+        time.sleep(random.uniform(4, 7))
+
+    if is_hd_blocked(driver):
+        print("   > Still blocked after retry. HD session may be compromised.")
+        return False
+
+    wait = WebDriverWait(driver, 15)
+
+    # Set ZIP code to establish location context
+    try:
+        print("   > Setting ZIP code...")
+        trigger = wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//button[@data-testid='delivery-zip-button']")))
+        driver.execute_script("arguments[0].click();", trigger)
+
+        wait.until(EC.visibility_of_element_located(
+            (By.XPATH, "//div[@data-testid='header-drawer-content']")))
+        time.sleep(2)
+
+        zip_input = driver.execute_script("""
+            var drawer = document.querySelector('div[data-testid="header-drawer-content"]');
+            if (!drawer) return null;
+            return drawer.querySelector('input[placeholder="Enter ZIP Code"]');
+        """)
+
+        if zip_input:
+            driver.execute_script("arguments[0].value = '';", zip_input)
+            driver.execute_script("arguments[0].focus();", zip_input)
+            time.sleep(1)
+
+            # Type ZIP human-like
+            for char in zip_code:
+                zip_input.send_keys(char)
+                time.sleep(random.uniform(0.05, 0.2))
+
+            # Fire React events
+            driver.execute_script("""
+                var el = arguments[0];
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            """, zip_input)
+            time.sleep(1)
+
+            # Click Update
+            update_btn = driver.find_element(
+                By.XPATH,
+                "//div[@data-testid='header-drawer-content']//button[contains(text(), 'Update')]")
+            driver.execute_script("arguments[0].click();", update_btn)
+            time.sleep(random.uniform(3, 5))
+            print(f"   > ZIP set to {zip_code}")
+        else:
+            print("   > ZIP input not found, continuing without setting ZIP")
+
+    except Exception as e:
+        print(f"   > ZIP setup failed (non-fatal): {e}")
+
+    # Simulate brief browsing to build sensor data
+    print("   > Simulating browsing behavior...")
+    driver.execute_script("window.scrollBy(0, 400);")
+    time.sleep(random.uniform(1, 2))
+    driver.execute_script("window.scrollBy(0, -200);")
+    time.sleep(random.uniform(1, 2))
+
+    print("   > HD session warm-up complete.")
+    return True
 
 
 def pad_row(input_list, target_char_length=ROW_SIZE, pad_char=" "):
@@ -640,6 +782,9 @@ def main():
 
             print(f"Starting item collection & verification (Max: {max_items})...")
 
+            # Warm up HD session first to build Akamai trust
+            warm_up_hd_session(driver, zip_code=args.zip)
+
             rebel_url = REBEL_SAVINGS_DEAL_URL.format(zip=args.zip)
             print(f"Navigating to: {rebel_url}")
             driver.get(rebel_url)
@@ -774,13 +919,20 @@ def main():
                                 seen_ids.add(name)
                                 new_items_found_in_this_pass += 1
 
-                            # Anti-detection pause between tabs
+                            # Anti-detection pause between items
                             if hd_status == HDStatus.BLOCKED:
-                                sleep_time = random.randint(300, 600)
-                                print(f"!!! BLOCKED DETECTED. Sleeping {sleep_time}s !!!")
+                                print("!!! BLOCKED DETECTED. Clearing cookies and cooling down...")
+                                # Switch to HD tab if it exists, clear cookies there
+                                if len(driver.window_handles) > 1:
+                                    driver.switch_to.window(driver.window_handles[-1])
+                                    clear_hd_cookies(driver)
+                                    driver.close()
+                                    driver.switch_to.window(main_window)
+                                sleep_time = random.randint(60, 120)
+                                print(f"   Sleeping {sleep_time}s before next item...")
                                 time.sleep(sleep_time)
                             else:
-                                time.sleep(random.uniform(2, 5))
+                                time.sleep(random.uniform(5, 10))
 
                         except Exception as e1:
                             e2 = ""
@@ -836,6 +988,7 @@ def main():
         #     time.sleep(30)
 
         driver = get_driver()
+        warm_up_hd_session(driver, zip_code=args.zip)
         process_tracker_items(driver, deal_list, tsv_output_path)
 
 
