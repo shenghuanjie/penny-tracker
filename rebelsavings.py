@@ -443,6 +443,10 @@ def get_driver():
     # 1. Disable the popup blocking flag explicitly
     options.add_argument("--disable-popup-blocking")
 
+    # Don't wait for full page load — React SPAs fire DOMContentLoaded
+    # early but keep loading JS bundles that can cause 300s timeouts
+    options.page_load_strategy = 'eager'
+
     # 2. Set the content setting preference to '1' (Allow) for popups
     #    0 = Default, 1 = Allow, 2 = Block
     prefs = {
@@ -455,6 +459,8 @@ def get_driver():
     options.add_argument("--window-size=1920,1080")
     # Force version 138 to match your browser if needed, else remove version_main
     driver = uc.Chrome(options=options, version_main=138)
+    # Set page load timeout to 60s as a safety net
+    driver.set_page_load_timeout(60)
     return driver
 
 
@@ -818,7 +824,11 @@ def main():
 
             rebel_url = REBEL_SAVINGS_DEAL_URL.format(zip=args.zip)
             print(f"Navigating to: {rebel_url}")
-            driver.get(rebel_url)
+            try:
+                driver.get(rebel_url)
+            except Exception as e:
+                # Page load timeout is OK with eager strategy — DOM may already be ready
+                print(f"Page load warning (may be OK): {e}")
             # Wait for the React app to load and render deal rows
             WebDriverWait(driver, 30).until(
                 EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
