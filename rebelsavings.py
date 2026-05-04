@@ -528,6 +528,8 @@ def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP):
             (By.XPATH, "//div[@data-testid='header-drawer-content']")))
         time.sleep(2)
 
+        # Find the ZIP input — try JS first (more reliable in React drawers),
+        # then use Selenium's native method to interact with it
         zip_input = driver.execute_script("""
             var drawer = document.querySelector('div[data-testid="header-drawer-content"]');
             if (!drawer) return null;
@@ -535,21 +537,19 @@ def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP):
         """)
 
         if zip_input:
-            driver.execute_script("arguments[0].value = '';", zip_input)
-            driver.execute_script("arguments[0].focus();", zip_input)
-            time.sleep(1)
-
-            # Type ZIP human-like
-            for char in zip_code:
-                zip_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.2))
-
-            # Fire React events
+            # Use JS to set value and fire React-compatible events
+            # (avoids 'element not interactable' from send_keys)
             driver.execute_script("""
                 var el = arguments[0];
+                var zip = arguments[1];
+                // Clear and set value
+                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                nativeInputValueSetter.call(el, zip);
+                // Fire React-compatible events
                 el.dispatchEvent(new Event('input', { bubbles: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true }));
-            """, zip_input)
+            """, zip_input, zip_code)
             time.sleep(1)
 
             # Click Update
@@ -658,16 +658,18 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                 match_index = content.find(item_name)
                 if match_index == -1:
                     continue
-                f_out.seek(match_index)
+                # Seek back to the start of the line containing the name
+                # content.find() lands in the middle of the line, so we need
+                # to find the actual line start
+                line_start = content.rfind("\n", 0, match_index) + 1
+                f_out.seek(line_start)
                 line_start_index = f_out.tell()
-                _ = f_out.readline()
                 data = f_out.readline()
                 parts = data.strip().split("\t")
+                while len(parts) < len(FIELDNAMES):
+                    parts.append("")
                 current_timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
-                try:
-                    tsv_update_timestamp = parts[FIELDNAMES.index('updated_at')]
-                except IndexError:
-                    tsv_update_timestamp = None
+                tsv_update_timestamp = parts[FIELDNAMES.index('updated_at')]
                 if is_within_x_days(current_timestamp, tsv_update_timestamp, 1):
                     print(f'Already updated earlier today. Skipping update for {item_name}')
                     f_out.seek(line_start_index)
@@ -866,12 +868,12 @@ def main():
                                 line_start_index = f_out.tell()
                                 data = f_out.readline()
                                 parts = data.strip().split("\t")
+                                # Pad parts if padding field was stripped
+                                while len(parts) < len(FIELDNAMES):
+                                    parts.append("")
 
                                 # Skip items already confirmed as penny
-                                try:
-                                    existing_status = parts[FIELDNAMES.index('hd_status')]
-                                except IndexError:
-                                    existing_status = ""
+                                existing_status = parts[FIELDNAMES.index('hd_status')]
                                 if existing_status == HDStatus.PENNY:
                                     print(f'Already confirmed PENNY. Skipping {name}')
                                     f_out.seek(line_start_index)
