@@ -231,104 +231,162 @@ def extract_sku_from_url(hd_url):
     return None
 
 
-def navigate_hd_via_search(driver, hd_url, name=''):
+def navigate_hd_via_google(driver, hd_url, name=''):
     """
-    Navigate to a Home Depot product page by searching for its SKU
-    on homedepot.com instead of using a direct link. This avoids
-    bot detection that triggers on direct product URL access.
+    Navigate to a Home Depot product page via Google search.
+    Searching on Google and clicking through gives a legitimate Referer
+    header and mimics real user behavior, which avoids Akamai bot detection.
 
-    If blocked, clears Akamai cookies, waits, and retries once.
+    Falls back to HD on-site search, then direct URL as last resort.
     """
     sku = extract_sku_from_url(hd_url)
     if not sku:
         print(f"   > Could not extract SKU from URL: {hd_url}")
-        print(f"   > Falling back to direct navigation")
-        driver.get(hd_url)
+        return False
+
+    print(f"   > Google search for HD SKU: {sku}")
+
+    try:
+        # Search Google for the SKU on homedepot.com
+        query = f"site:homedepot.com {sku}"
+        driver.get(f"https://www.google.com/search?q={query}")
         time.sleep(random.uniform(3, 5))
-        return
 
-    print(f"   > Searching HD for SKU: {sku}")
+        wait = WebDriverWait(driver, 10)
 
-    max_retries = 2
-    for attempt in range(max_retries):
-        # If we're not on homedepot.com or we're on a block page, go to homepage
+        # Look for a homedepot.com link in Google results
+        try:
+            hd_result = wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//a[contains(@href, 'homedepot.com/p/')]")))
+            print(f"   > Found HD link in Google results, clicking...")
+            # Scroll to it first
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", hd_result)
+            time.sleep(random.uniform(0.5, 1.5))
+            hd_result.click()
+            time.sleep(random.uniform(4, 7))
+
+            if not is_hd_blocked(driver):
+                return True
+            else:
+                print(f"   > Blocked after Google click-through")
+        except Exception:
+            print(f"   > No HD result found on Google, trying HD search...")
+
+    except Exception as e:
+        print(f"   > Google search failed: {e}")
+
+    # Fallback: HD on-site search
+    return navigate_hd_via_site_search(driver, sku)
+
+
+def navigate_hd_via_site_search(driver, sku):
+    """
+    Fallback: search for a product SKU using HD's on-site search bar.
+    Only used when Google click-through fails.
+    """
+    try:
+        # Navigate to HD homepage if not already there
         if "homedepot.com" not in driver.current_url or is_hd_blocked(driver):
-            if attempt > 0:
-                print(f"   > Retry {attempt}: clearing cookies and waiting...")
-                clear_hd_cookies(driver)
-                wait_time = random.uniform(30, 60)
-                print(f"   > Waiting {wait_time:.0f}s before retry...")
-                time.sleep(wait_time)
-
             driver.get("https://www.homedepot.com")
             time.sleep(random.uniform(4, 7))
 
-            if is_hd_blocked(driver):
-                if attempt < max_retries - 1:
-                    continue
-                else:
-                    print(f"   > Still blocked after {max_retries} attempts")
-                    return
+        if is_hd_blocked(driver):
+            print(f"   > Blocked on HD homepage")
+            return False
 
         wait = WebDriverWait(driver, 15)
 
-        try:
-            # Find the search box
-            search_box = wait.until(EC.presence_of_element_located(
-                (By.ID, "typeahead-search-field-input")))
+        search_box = wait.until(EC.presence_of_element_located(
+            (By.ID, "typeahead-search-field-input")))
 
-            # Click to focus
-            search_box.click()
-            time.sleep(random.uniform(0.5, 1.0))
+        search_box.click()
+        time.sleep(random.uniform(0.5, 1.0))
 
-            # Clear existing text
-            search_box.send_keys(Keys.CONTROL + "a")
-            time.sleep(0.1)
-            search_box.send_keys(Keys.BACKSPACE)
-            time.sleep(random.uniform(0.3, 0.6))
+        # Clear existing text
+        search_box.send_keys(Keys.CONTROL + "a")
+        time.sleep(0.1)
+        search_box.send_keys(Keys.BACKSPACE)
+        time.sleep(random.uniform(0.3, 0.6))
 
-            # Type the SKU one character at a time (human-like)
-            for char in sku:
-                search_box.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))
+        # Type the SKU human-like
+        for char in sku:
+            search_box.send_keys(char)
+            time.sleep(random.uniform(0.05, 0.15))
 
-            time.sleep(random.uniform(0.5, 1.0))
-            search_box.send_keys(Keys.ENTER)
+        time.sleep(random.uniform(0.5, 1.0))
+        search_box.send_keys(Keys.ENTER)
+        time.sleep(random.uniform(4, 7))
 
-            # Wait for results to load
-            time.sleep(random.uniform(4, 7))
+        if is_hd_blocked(driver):
+            return False
 
-            # Check if we got blocked after search
-            if is_hd_blocked(driver):
-                if attempt < max_retries - 1:
-                    continue
-                else:
-                    print(f"   > Blocked after search on final attempt")
-                    return
-
-            # HD often redirects directly to the product page for exact SKU matches.
-            # If we're on a search results page, click the first result.
-            if "/s/" in driver.current_url or "Ntt=" in driver.current_url:
-                try:
-                    product_link = wait.until(EC.element_to_be_clickable(
-                        (By.XPATH, "//a[contains(@href, '/p/')]")))
-                    driver.execute_script("arguments[0].click();", product_link)
-                    time.sleep(random.uniform(3, 5))
-                except Exception:
-                    print(f"   > No product found in search results for SKU: {sku}")
-
-            # Success — break out of retry loop
-            return
-
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"   > Search attempt {attempt + 1} failed: {e}")
-                continue
-            else:
-                print(f"   > Search navigation failed after {max_retries} attempts: {e}")
-                print(f"   > Falling back to direct navigation")
-                driver.get(hd_url)
+        # HD often redirects directly to the product page for exact SKU matches
+        if "/s/" in driver.current_url or "Ntt=" in driver.current_url:
+            try:
+                product_link = wait.until(EC.element_to_be_clickable(
+                    (By.XPATH, "//a[contains(@href, '/p/')]")))
+                driver.execute_script("arguments[0].click();", product_link)
                 time.sleep(random.uniform(3, 5))
+            except Exception:
+                print(f"   > No product found in HD search results for SKU: {sku}")
+                return False
+
+        return not is_hd_blocked(driver)
+
+    except Exception as e:
+        print(f"   > HD site search failed: {e}")
+        return False
+
+
+def navigate_to_hd_product(driver, hd_url, name=''):
+    """
+    Main entry point for navigating to an HD product page.
+    Tries strategies in order: Google click-through → HD site search → direct URL.
+    Returns True if navigation succeeded (not blocked), False otherwise.
+    """
+    # Strategy 1: Google search click-through
+    if navigate_hd_via_google(driver, hd_url, name=name):
+        return True
+
+    # Strategy 2: Clear cookies, wait, try Google again
+    print(f"   > Clearing cookies and retrying via Google...")
+    clear_hd_cookies(driver)
+    time.sleep(random.uniform(15, 30))
+    if navigate_hd_via_google(driver, hd_url, name=name):
+        return True
+
+    # Strategy 3: Direct URL as last resort
+    print(f"   > All strategies failed, trying direct URL...")
+    try:
+        driver.get(hd_url)
+        time.sleep(random.uniform(3, 5))
+        return not is_hd_blocked(driver)
+    except Exception:
+        return False
+
+
+def browse_hd_homepage(driver):
+    """
+    Navigate back to HD homepage and simulate brief browsing.
+    Builds Akamai sensor trust between product checks.
+    """
+    try:
+        driver.get("https://www.homedepot.com")
+        time.sleep(random.uniform(3, 5))
+
+        if is_hd_blocked(driver):
+            clear_hd_cookies(driver)
+            time.sleep(random.uniform(5, 10))
+            driver.get("https://www.homedepot.com")
+            time.sleep(random.uniform(3, 5))
+
+        # Simulate browsing
+        driver.execute_script("window.scrollBy(0, %d);" % random.randint(200, 500))
+        time.sleep(random.uniform(1, 3))
+        driver.execute_script("window.scrollBy(0, %d);" % random.randint(-300, -100))
+        time.sleep(random.uniform(1, 2))
+    except Exception:
+        pass
 
 
 def check_hd_item_tab_status(driver, name=''):
@@ -692,16 +750,20 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                 hd_url = link_element.get_attribute("href")
                 print(f"   HD URL: {hd_url}")
 
-                # Open a new tab and navigate via search
-                driver.execute_script("window.open('');")
+                # Open HD tab if it doesn't exist, otherwise reuse it
+                if len(driver.window_handles) < 2:
+                    driver.execute_script("window.open('');")
                 driver.switch_to.window(driver.window_handles[-1])
 
                 # --- RUN YOUR CHECK FUNCTION ---
                 new_hd_status = HDStatus.ERROR
                 try:
-                    navigate_hd_via_search(driver, hd_url, name=item_name)
-                    time.sleep(random.uniform(2, 4))
-                    new_hd_status = check_hd_item_tab_status(driver, name=item_name)
+                    nav_ok = navigate_to_hd_product(driver, hd_url, name=item_name)
+                    if nav_ok:
+                        time.sleep(random.uniform(2, 4))
+                        new_hd_status = check_hd_item_tab_status(driver, name=item_name)
+                    else:
+                        new_hd_status = HDStatus.BLOCKED
                     print(f"   >>> Result: {new_hd_status}")
 
                     for ideal, current_deal in enumerate(deal_list):
@@ -713,15 +775,17 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                 except Exception as e:
                     print(f"   !!! Error checking status: {e}")
 
-                # Close tab and return to list
-                driver.close()
+                # Switch back (keep HD tab open)
                 driver.switch_to.window(main_window_handle)
 
                 # Track consecutive blocks
                 if new_hd_status == HDStatus.BLOCKED:
                     consecutive_blocks += 1
                     print(f"!!! BLOCKED ({consecutive_blocks}/{max_consecutive_blocks}). Clearing cookies...")
-                    clear_hd_cookies(driver)
+                    if len(driver.window_handles) > 1:
+                        driver.switch_to.window(driver.window_handles[-1])
+                        clear_hd_cookies(driver)
+                        driver.switch_to.window(main_window_handle)
                     if consecutive_blocks >= max_consecutive_blocks:
                         print(f"!!! {max_consecutive_blocks} consecutive blocks. Stopping to avoid IP ban.")
                         break
@@ -730,6 +794,11 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                     time.sleep(sleep_time)
                 else:
                     consecutive_blocks = 0  # Reset on success
+                    # Browse HD homepage between checks to build trust
+                    if len(driver.window_handles) > 1:
+                        driver.switch_to.window(driver.window_handles[-1])
+                        browse_hd_homepage(driver)
+                        driver.switch_to.window(main_window_handle)
                     time.sleep(random.uniform(8, 15))
 
             except Exception as e:
@@ -928,24 +997,27 @@ def main():
                             hd_url = hd_link_elem.get_attribute("href")
                             print(f"   HD URL: {hd_url}")
 
-                            # Close the modal first (before opening HD tab)
+                            # Close the modal first (before switching to HD tab)
                             close_btn.click()
                             time.sleep(random.uniform(0.5, 1.0))
 
-                            # Open a new tab and navigate via search
-                            driver.execute_script("window.open('');")
+                            # Open HD tab if it doesn't exist, otherwise reuse it
+                            if len(driver.window_handles) < 2:
+                                driver.execute_script("window.open('');")
                             driver.switch_to.window(driver.window_handles[-1])
 
                             try:
-                                navigate_hd_via_search(driver, hd_url, name=name)
-                                time.sleep(random.uniform(2, 4))
-                                hd_status = check_hd_item_tab_status(driver, name=name)
+                                nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
+                                if nav_ok:
+                                    time.sleep(random.uniform(2, 4))
+                                    hd_status = check_hd_item_tab_status(driver, name=name)
+                                else:
+                                    hd_status = HDStatus.BLOCKED
                             except Exception as e:
                                 print(f"   Error checking tab: {e}")
                                 hd_status = HDStatus.ERROR
 
-                            # Close the HD tab and switch back
-                            driver.close()
+                            # Switch back to RebelSavings (keep HD tab open)
                             driver.switch_to.window(main_window)
                             # -------------------------------------
 
@@ -977,11 +1049,10 @@ def main():
                             if hd_status == HDStatus.BLOCKED:
                                 consecutive_blocks += 1
                                 print(f"!!! BLOCKED DETECTED ({consecutive_blocks}/{max_consecutive_blocks}). Clearing cookies and cooling down...")
-                                # Switch to HD tab if it exists, clear cookies there
+                                # Clear cookies on HD tab
                                 if len(driver.window_handles) > 1:
                                     driver.switch_to.window(driver.window_handles[-1])
                                     clear_hd_cookies(driver)
-                                    driver.close()
                                     driver.switch_to.window(main_window)
                                 if consecutive_blocks >= max_consecutive_blocks:
                                     print(f"!!! {max_consecutive_blocks} consecutive blocks. Stopping to avoid IP ban.")
@@ -991,6 +1062,11 @@ def main():
                                 time.sleep(sleep_time)
                             else:
                                 consecutive_blocks = 0  # Reset on success
+                                # Browse HD homepage between checks to build trust
+                                if len(driver.window_handles) > 1:
+                                    driver.switch_to.window(driver.window_handles[-1])
+                                    browse_hd_homepage(driver)
+                                    driver.switch_to.window(main_window)
                                 time.sleep(random.uniform(5, 10))
 
                         except Exception as e1:
