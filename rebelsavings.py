@@ -902,6 +902,29 @@ def main():
             WebDriverWait(driver, 30).until(
                 EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
             print("Deal page loaded successfully.")
+
+            # Enable "Show Out of Stock" filter to see all items
+            try:
+                oos_checkbox = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, "//label[contains(., 'Show Out of Stock')]//input"
+                                   " | //input[following-sibling::*[contains(text(),'Show Out of Stock')]]"
+                                   " | //*[contains(text(),'Show Out of Stock')]")))
+                # Check if it's already checked
+                is_checked = oos_checkbox.get_attribute("checked") or \
+                    oos_checkbox.get_attribute("aria-checked") == "true"
+                if not is_checked:
+                    driver.execute_script("arguments[0].click();", oos_checkbox)
+                    time.sleep(random.uniform(2, 4))
+                    # Wait for the list to refresh
+                    WebDriverWait(driver, 15).until(
+                        EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
+                    print("'Show Out of Stock' filter enabled.")
+                else:
+                    print("'Show Out of Stock' already enabled.")
+            except Exception as e:
+                print(f"Could not enable 'Show Out of Stock' (non-fatal): {e}")
+
             driver.execute_script("document.body.style.zoom='75%'")
 
             # Open file in append mode (or write if empty)
