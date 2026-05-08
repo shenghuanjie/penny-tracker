@@ -1093,6 +1093,49 @@ def main():
 
                 print(f"\nSaved {len(oos_names)} out-of-stock items.")
 
+                # Also save in-stock items that haven't been seen yet
+                # (so the report includes them even before HD check)
+                for name, item in in_stock_items.items():
+                    if name not in seen_ids:
+                        current_deal = {
+                            "name": name,
+                            "price": item["price"],
+                            "url": item["url"],
+                            "image": item["image"],
+                            "original_timestamp": now,
+                            "hd_status": "",
+                            "updated_at": "",
+                            "padding": ""
+                        }
+                        print(pad_row(current_deal), file=f_out)
+                        f_out.flush()
+                        deal_list.append(current_deal)
+                        seen_ids.add(name)
+
+                f_out.flush()
+
+            # ============================================================
+            # PHASE 4.5: Generate report, commit and push OOS data
+            # ============================================================
+            print("\n=== Generating interim report and pushing OOS data ===")
+            generate_html_report(deal_list, report_path)
+            try:
+                subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
+                subprocess.run(["git", "commit", "-m", "update data"],
+                               cwd=args.output_dir, check=True)
+                subprocess.run(
+                    ["git", "push"],
+                    cwd=args.output_dir,
+                    env={**os.environ,
+                         "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github -o IdentitiesOnly=yes"},
+                    check=True)
+                print("OOS data committed and pushed.")
+            except subprocess.CalledProcessError as e:
+                print(f"Git commit/push failed (non-fatal): {e}")
+
+            # Reopen TSV for Phase 5
+            with open(tsv_output_path, "a+", encoding="utf-8") as f_out:
+
                 # ============================================================
                 # PHASE 5: Check in-stock items on HD (with long delays)
                 # ============================================================
@@ -1217,9 +1260,22 @@ def main():
             driver.quit()
             print("Scraping & Verification complete")
 
-            # Generate Report at the end
+            # Generate final report and push
             print('Saving HTML report...')
             generate_html_report(deal_list, report_path)
+            try:
+                subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
+                subprocess.run(["git", "commit", "-m", "update data"],
+                               cwd=args.output_dir, check=True)
+                subprocess.run(
+                    ["git", "push"],
+                    cwd=args.output_dir,
+                    env={**os.environ,
+                         "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github -o IdentitiesOnly=yes"},
+                    check=True)
+                print("Final data committed and pushed.")
+            except subprocess.CalledProcessError as e:
+                print(f"Final git commit/push failed (non-fatal): {e}")
 
     # --- REPORT ONLY MODE ---
     elif args.mode == RunningMode.REPORT:
