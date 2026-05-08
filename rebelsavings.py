@@ -111,6 +111,7 @@ class HDStatus:
     NOT_PENNY = 'not_penny'
     PENNY_CANDIDATE = 'penny_candidate'
     CLEARANCE = 'clearance'
+    OUT_OF_STOCK = 'out_of_stock'
     ERROR = 'error'
     FAILURE = 'failure'
     BLOCKED = 'blocked'
@@ -124,12 +125,13 @@ def generate_html_report(deals, output_path):
     status_priority = {
         'penny': 0,
         'penny_candidate': 1,
-        'clearance': 2,
-        'not_penny': 3,
-        'error': 4,
-        'failure': 5,
-        'blocked': 6,
-        'unchecked': 7
+        'out_of_stock': 2,
+        'clearance': 3,
+        'not_penny': 4,
+        'blocked': 5,
+        'error': 6,
+        'failure': 7,
+        'unchecked': 8
     }
 
     # Sort in-place
@@ -156,6 +158,7 @@ def generate_html_report(deals, output_path):
         .clearance { color: #2ecc71; font-weight: bold; }         /* Green: Verified Clearance */
         .error { color: #8e44ad; font-weight: bold; }             /* Purple: Code Exception */
         .failure { color: #95a5a6; font-style: italic; }          /* Grey: Page Crash/Missing Data */
+        .out_of_stock { color: #7f8c8d; font-weight: bold; font-style: italic; } /* Grey: Out of Stock on RebelSavings */
         .blocked { color: #c0392b; font-weight: bold; text-decoration: underline; } /* Dark Red: Bot Detected */
 
     </style></head><body>
@@ -809,6 +812,116 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                 continue
 
 
+def collect_all_rebel_items(driver, max_items=float('inf')):
+    """
+    Scroll through the RebelSavings deal page and collect all visible items.
+    Returns a dict of {name: {price, url, image}} for each item found.
+    """
+    collected = {}
+    max_patience = 3
+    patience = 0
+
+    while len(collected) < max_items:
+        current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
+        new_found = 0
+
+        for row in current_rows:
+            if len(collected) >= max_items:
+                break
+            try:
+                name_elem = row.find_element(By.CLASS_NAME, "title-column")
+                name = name_elem.text.splitlines()[0].strip()
+                if not name or name in collected:
+                    continue
+
+                price = row.find_element(By.XPATH, "./td[3]").text.strip()
+                try:
+                    img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
+                except Exception:
+                    img_url = ""
+
+                # Click row to open modal and get HD URL
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", row)
+                time.sleep(random.uniform(0.5, 1.0))
+                driver.execute_script("arguments[0].click();", row)
+
+                try:
+                    wait_menu = WebDriverWait(driver, 5)
+                    close_btn = wait_menu.until(
+                        EC.element_to_be_clickable((By.CLASS_NAME, "close-menu-btn")))
+                    hd_link_elem = wait_menu.until(EC.presence_of_element_located(
+                        (By.XPATH, "//div[contains(@class, 'detail-overlay-content')]//a")))
+                    hd_url = hd_link_elem.get_attribute("href")
+                    close_btn.click()
+                    time.sleep(random.uniform(0.3, 0.6))
+                except Exception:
+                    hd_url = ""
+                    # Try to close modal if it opened
+                    try:
+                        driver.find_element(By.CLASS_NAME, "close-menu-btn").click()
+                    except Exception:
+                        pass
+
+                collected[name] = {
+                    "price": price,
+                    "url": hd_url,
+                    "image": img_url,
+                }
+                new_found += 1
+                print(f"  [{len(collected)}] {name[:60]}")
+
+            except Exception as e:
+                continue
+
+        if new_found > 0:
+            patience = 0
+        else:
+            patience += 1
+            if patience >= max_patience:
+                break
+
+        driver.execute_script("window.scrollBy(0, 800);")
+        time.sleep(random.uniform(2, 4))
+
+    print(f"Collected {len(collected)} items total.")
+    return collected
+
+
+def toggle_oos_filter(driver, enable=True):
+    """Toggle the 'Show Out of Stock' checkbox on RebelSavings."""
+    try:
+        oos_elem = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.XPATH, "//label[contains(., 'Show Out of Stock')]//input"
+                           " | //input[following-sibling::*[contains(text(),'Show Out of Stock')]]"
+                           " | //*[contains(text(),'Show Out of Stock')]")))
+
+        # Determine current state
+        is_checked = oos_elem.get_attribute("checked") or \
+            oos_elem.get_attribute("aria-checked") == "true"
+
+        if enable and not is_checked:
+            driver.execute_script("arguments[0].click();", oos_elem)
+            print("'Show Out of Stock' enabled.")
+        elif not enable and is_checked:
+            driver.execute_script("arguments[0].click();", oos_elem)
+            print("'Show Out of Stock' disabled.")
+        else:
+            print(f"'Show Out of Stock' already {'enabled' if enable else 'disabled'}.")
+
+        time.sleep(random.uniform(2, 4))
+        # Wait for list to refresh
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
+        # Scroll back to top
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(1)
+        return True
+    except Exception as e:
+        print(f"Could not toggle 'Show Out of Stock': {e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="RebelSavings Scraper & Reporter")
     parser.add_argument("-n", "--max-items", type=int, default=None,
@@ -902,232 +1015,203 @@ def main():
             WebDriverWait(driver, 30).until(
                 EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
             print("Deal page loaded successfully.")
-
-            # Enable "Show Out of Stock" filter to see all items
-            try:
-                oos_checkbox = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located(
-                        (By.XPATH, "//label[contains(., 'Show Out of Stock')]//input"
-                                   " | //input[following-sibling::*[contains(text(),'Show Out of Stock')]]"
-                                   " | //*[contains(text(),'Show Out of Stock')]")))
-                # Check if it's already checked
-                is_checked = oos_checkbox.get_attribute("checked") or \
-                    oos_checkbox.get_attribute("aria-checked") == "true"
-                if not is_checked:
-                    driver.execute_script("arguments[0].click();", oos_checkbox)
-                    time.sleep(random.uniform(2, 4))
-                    # Wait for the list to refresh
-                    WebDriverWait(driver, 15).until(
-                        EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
-                    print("'Show Out of Stock' filter enabled.")
-                else:
-                    print("'Show Out of Stock' already enabled.")
-            except Exception as e:
-                print(f"Could not enable 'Show Out of Stock' (non-fatal): {e}")
-
             driver.execute_script("document.body.style.zoom='75%'")
 
-            # Open file in append mode (or write if empty)
-            open_mode = 'a+' if os.path.isfile(tsv_output_path) else 'w+'
+            main_window = driver.current_window_handle
 
-            # Using 'r+' implies reading/writing, but standard append is safer for logs
-            # However, we want to maintain the header if new
+            # ============================================================
+            # PHASE 1: Collect all IN-STOCK items (OOS filter OFF)
+            # ============================================================
+            print("\n=== PHASE 1: Collecting in-stock items ===")
+            toggle_oos_filter(driver, enable=False)
+            in_stock_items = collect_all_rebel_items(driver, max_items=max_items)
+
+            # ============================================================
+            # PHASE 2: Enable OOS filter and collect ALL items
+            # ============================================================
+            print("\n=== PHASE 2: Collecting all items (including out-of-stock) ===")
+            toggle_oos_filter(driver, enable=True)
+            all_items = collect_all_rebel_items(driver, max_items=max_items)
+
+            # ============================================================
+            # PHASE 3: Diff to find out-of-stock items
+            # ============================================================
+            oos_names = set(all_items.keys()) - set(in_stock_items.keys())
+            print(f"\n=== Found {len(oos_names)} out-of-stock items, "
+                  f"{len(in_stock_items)} in-stock items ===")
+
+            # ============================================================
+            # PHASE 4: Save OOS items immediately (no HD check needed)
+            # ============================================================
+            open_mode = 'a+' if os.path.isfile(tsv_output_path) else 'w+'
             with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
                 if open_mode == "w+":
                     print(pad_row(FIELDNAMES), file=f_out)
 
-                max_patience = 3
-                current_patience = 0
+                now = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
+
+                for oos_name in oos_names:
+                    item = all_items[oos_name]
+
+                    # Check if already in TSV
+                    if oos_name in seen_ids:
+                        # Read existing entry to check status
+                        f_out.seek(0)
+                        content = f_out.read()
+                        match_index = content.find(oos_name)
+                        if match_index != -1:
+                            line_start = content.rfind("\n", 0, match_index) + 1
+                            f_out.seek(line_start)
+                            data = f_out.readline()
+                            parts = data.strip().split("\t")
+                            while len(parts) < len(FIELDNAMES):
+                                parts.append("")
+                            existing_status = parts[FIELDNAMES.index('hd_status')]
+                            # Don't overwrite PENNY status
+                            if existing_status == HDStatus.PENNY:
+                                continue
+                        f_out.seek(0, 2)
+
+                    current_deal = {
+                        "name": oos_name,
+                        "price": item["price"],
+                        "url": item["url"],
+                        "image": item["image"],
+                        "original_timestamp": now,
+                        "hd_status": HDStatus.OUT_OF_STOCK,
+                        "updated_at": now,
+                        "padding": ""
+                    }
+                    print(pad_row(current_deal), file=f_out)
+                    f_out.flush()
+
+                    if oos_name not in seen_ids:
+                        deal_list.append(current_deal)
+                        seen_ids.add(oos_name)
+
+                    print(f"  [OOS] {oos_name[:60]}")
+
+                print(f"\nSaved {len(oos_names)} out-of-stock items.")
+
+                # ============================================================
+                # PHASE 5: Check in-stock items on HD (with long delays)
+                # ============================================================
+                print(f"\n=== PHASE 5: Checking {len(in_stock_items)} in-stock items on HD ===")
+
                 consecutive_blocks = 0
                 max_consecutive_blocks = 3
-                main_window = driver.current_window_handle  # Store RebelSavings Handle
+                items_checked = 0
 
-                while len(deal_list) < max_items:
-                    # 1. Grab whatever is currently in the DOM (Virtual Window)
-                    current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
-
-                    new_items_found_in_this_pass = 0
-
-                    for row in current_rows:
-
-                        if len(deal_list) >= max_items:
-                            break
-
-                        try:
-                            name_elem = row.find_element(By.CLASS_NAME, "title-column")
-                            name = name_elem.text.splitlines()[0].strip()
-
-                            if name in seen_ids:
-                                duplicated_item = True
-                                print(f'Duplicate item found: {name}')
-                                # 1. Move to the start of the file to read content
-                                f_out.seek(0)
-                                # 2. Read content to find the 'name'
-                                content = f_out.read()
-                                match_index = content.find(name)
-                                f_out.seek(match_index)
-
-                                line_start_index = f_out.tell()
-                                data = f_out.readline()
-                                parts = data.strip().split("\t")
-                                # Pad parts if padding field was stripped
-                                while len(parts) < len(FIELDNAMES):
-                                    parts.append("")
-
-                                # Skip items already confirmed as penny
-                                existing_status = parts[FIELDNAMES.index('hd_status')]
-                                if existing_status == HDStatus.PENNY:
-                                    print(f'Already confirmed PENNY. Skipping {name}')
-                                    f_out.seek(line_start_index)
-                                    continue
-
-                                update_timestamp = parts[FIELDNAMES.index('updated_at')]
-                                current_timestamp = datetime.datetime.fromtimestamp(
-                                    time.time()).strftime(TIMESTAMP_FORMAT)
-                                if is_within_x_days(current_timestamp, update_timestamp, 1):
-                                    print(
-                                        f'Already updated earlier today. Skipping update for {name}')
-                                    f_out.seek(line_start_index)
-                                    continue
-                                else:
-                                    f_out.seek(line_start_index)
-                            else:
-                                duplicated_item = False
-
-                            # --- 1. Get Rebel Data ---
-                            price = row.find_element(By.XPATH, "./td[3]").text.strip()
-
-                            try:
-                                img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
-                            except:
-                                img_url = ""
-
-                            # C. Interact (Scroll to it so it is fully rendered/clickable)
-                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});",
-                                                  row)
-                            time.sleep(random.uniform(1, 2))
-
-                            # Click row to open modal
-                            driver.execute_script("arguments[0].click();", row)
-
-                            # --- Modal Logic ---
-                            wait_menu = WebDriverWait(driver, 5)
-                            close_btn = wait_menu.until(
-                                EC.element_to_be_clickable((By.CLASS_NAME, "close-menu-btn")))
-
-                            hd_link_elem = wait_menu.until(EC.presence_of_element_located(
-                                (By.XPATH, "//div[contains(@class, 'detail-overlay-content')]//a")))
-                            hd_url = hd_link_elem.get_attribute("href")
-                            print(f"   HD URL: {hd_url}")
-
-                            # Close the modal first (before switching to HD tab)
-                            close_btn.click()
-                            time.sleep(random.uniform(0.5, 1.0))
-
-                            # Open HD tab if it doesn't exist, otherwise reuse it
-                            if len(driver.window_handles) < 2:
-                                driver.execute_script("window.open('');")
-                            driver.switch_to.window(driver.window_handles[-1])
-
-                            try:
-                                nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
-                                if nav_ok:
-                                    time.sleep(random.uniform(2, 4))
-                                    hd_status = check_hd_item_tab_status(driver, name=name)
-                                else:
-                                    hd_status = HDStatus.BLOCKED
-                            except Exception as e:
-                                print(f"   Error checking tab: {e}")
-                                hd_status = HDStatus.ERROR
-
-                            # Switch back to RebelSavings (keep HD tab open)
-                            driver.switch_to.window(main_window)
-                            # -------------------------------------
-
-                            # --- 3. SAVE DATA ---
-                            current_deal = {
-                                "name": name,
-                                "price": price,
-                                "url": hd_url,
-                                "image": img_url,
-                                "original_timestamp": datetime.datetime.fromtimestamp(
-                                    time.time()).strftime(TIMESTAMP_FORMAT),
-                                "hd_status": hd_status,
-                                "updated_at": datetime.datetime.fromtimestamp(time.time()).strftime(
-                                    TIMESTAMP_FORMAT),
-                                "padding": ""
-                            }
-
-                            print(pad_row(current_deal), file=f_out)
-                            f_out.flush()  # Ensure it's written immediately
-                            # always jump back to file end
-                            f_out.seek(0, 2)
-
-                            if not duplicated_item:
-                                deal_list.append(current_deal)
-                                seen_ids.add(name)
-                                new_items_found_in_this_pass += 1
-
-                            # Anti-detection pause between items
-                            if hd_status == HDStatus.BLOCKED:
-                                consecutive_blocks += 1
-                                print(f"!!! BLOCKED DETECTED ({consecutive_blocks}/{max_consecutive_blocks}). Clearing cookies and cooling down...")
-                                # Clear cookies on HD tab
-                                if len(driver.window_handles) > 1:
-                                    driver.switch_to.window(driver.window_handles[-1])
-                                    clear_hd_cookies(driver)
-                                    driver.switch_to.window(main_window)
-                                if consecutive_blocks >= max_consecutive_blocks:
-                                    print(f"!!! {max_consecutive_blocks} consecutive blocks. Stopping to avoid IP ban.")
-                                    break
-                                sleep_time = random.randint(60, 120)
-                                print(f"   Sleeping {sleep_time}s before next item...")
-                                time.sleep(sleep_time)
-                            else:
-                                consecutive_blocks = 0  # Reset on success
-                                # Browse HD homepage between checks to build trust
-                                if len(driver.window_handles) > 1:
-                                    driver.switch_to.window(driver.window_handles[-1])
-                                    browse_hd_homepage(driver)
-                                    driver.switch_to.window(main_window)
-                                time.sleep(random.uniform(5, 10))
-
-                        except Exception as e1:
-                            e2 = ""
-                            # Recovery if something broke
-                            try:
-                                if len(driver.window_handles) > 1:
-                                    # Ensure we are on main window and extra tabs are closed
-                                    for handle in driver.window_handles:
-                                        if handle != main_window:
-                                            driver.switch_to.window(handle)
-                                            driver.close()
-                                    driver.switch_to.window(main_window)
-                            except Exception as e2:
-                                pass
-                            print(f"Skipping row due to error: {e1}\n{e2}")
-                            continue
-
-                    # --- Check if we hit the block limit ---
-                    if consecutive_blocks >= max_consecutive_blocks:
+                for name, item in in_stock_items.items():
+                    if items_checked >= max_items:
                         break
 
-                    # --- End of Pass Logic ---
-                    if new_items_found_in_this_pass > 0:
-                        current_patience = 0
-                        print(
-                            f"Pass complete. Found {new_items_found_in_this_pass} new items. Scrolling...")
+                    # Skip items already confirmed as penny or recently updated
+                    if name in seen_ids:
+                        f_out.seek(0)
+                        content = f_out.read()
+                        match_index = content.find(name)
+                        if match_index != -1:
+                            line_start = content.rfind("\n", 0, match_index) + 1
+                            f_out.seek(line_start)
+                            data = f_out.readline()
+                            parts = data.strip().split("\t")
+                            while len(parts) < len(FIELDNAMES):
+                                parts.append("")
+
+                            existing_status = parts[FIELDNAMES.index('hd_status')]
+                            if existing_status == HDStatus.PENNY:
+                                print(f'Already confirmed PENNY. Skipping {name[:50]}')
+                                continue
+
+                            update_timestamp = parts[FIELDNAMES.index('updated_at')]
+                            current_timestamp = datetime.datetime.fromtimestamp(
+                                time.time()).strftime(TIMESTAMP_FORMAT)
+                            if is_within_x_days(current_timestamp, update_timestamp, 1):
+                                print(f'Updated today. Skipping {name[:50]}')
+                                continue
+
+                        f_out.seek(0, 2)
+                        duplicated_item = True
                     else:
-                        current_patience += 1
-                        print(
-                            f"Pass complete. NO new items. Patience: {current_patience}/{max_patience}")
+                        duplicated_item = False
 
-                    if current_patience >= max_patience:
-                        print("Max patience reached. Stopping.")
-                        break
+                    hd_url = item["url"]
+                    if not hd_url:
+                        continue
 
-                    driver.execute_script("window.scrollBy(0, 800);")
-                    time.sleep(random.uniform(4, 7))
+                    print(f"\n[{items_checked + 1}] Checking: {name[:60]}")
+                    print(f"   HD URL: {hd_url}")
+
+                    # Open HD tab if it doesn't exist, otherwise reuse it
+                    if len(driver.window_handles) < 2:
+                        driver.execute_script("window.open('');")
+                    driver.switch_to.window(driver.window_handles[-1])
+
+                    hd_status = HDStatus.ERROR
+                    try:
+                        nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
+                        if nav_ok:
+                            time.sleep(random.uniform(2, 4))
+                            hd_status = check_hd_item_tab_status(driver, name=name)
+                        else:
+                            hd_status = HDStatus.BLOCKED
+                    except Exception as e:
+                        print(f"   Error checking tab: {e}")
+                        hd_status = HDStatus.ERROR
+
+                    # Switch back to RebelSavings (keep HD tab open)
+                    driver.switch_to.window(main_window)
+
+                    # Save result
+                    current_deal = {
+                        "name": name,
+                        "price": item["price"],
+                        "url": hd_url,
+                        "image": item["image"],
+                        "original_timestamp": datetime.datetime.fromtimestamp(
+                            time.time()).strftime(TIMESTAMP_FORMAT),
+                        "hd_status": hd_status,
+                        "updated_at": datetime.datetime.fromtimestamp(
+                            time.time()).strftime(TIMESTAMP_FORMAT),
+                        "padding": ""
+                    }
+
+                    print(pad_row(current_deal), file=f_out)
+                    f_out.flush()
+                    f_out.seek(0, 2)
+
+                    if not duplicated_item:
+                        deal_list.append(current_deal)
+                        seen_ids.add(name)
+
+                    items_checked += 1
+
+                    # Handle blocks and pacing
+                    if hd_status == HDStatus.BLOCKED:
+                        consecutive_blocks += 1
+                        print(f"!!! BLOCKED ({consecutive_blocks}/{max_consecutive_blocks})")
+                        if len(driver.window_handles) > 1:
+                            driver.switch_to.window(driver.window_handles[-1])
+                            clear_hd_cookies(driver)
+                            driver.switch_to.window(main_window)
+                        if consecutive_blocks >= max_consecutive_blocks:
+                            print(f"!!! {max_consecutive_blocks} consecutive blocks. Stopping.")
+                            break
+                        sleep_time = random.randint(90, 180)
+                        print(f"   Sleeping {sleep_time}s...")
+                        time.sleep(sleep_time)
+                    else:
+                        consecutive_blocks = 0
+                        # Browse HD homepage between checks
+                        if len(driver.window_handles) > 1:
+                            driver.switch_to.window(driver.window_handles[-1])
+                            browse_hd_homepage(driver)
+                            driver.switch_to.window(main_window)
+                        # Longer delay between checks (60-120s)
+                        delay = random.uniform(60, 120)
+                        print(f"   Waiting {delay:.0f}s before next check...")
+                        time.sleep(delay)
 
         finally:
             driver.quit()
