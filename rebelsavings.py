@@ -560,11 +560,85 @@ def clear_hd_cookies(driver):
     """)
 
 
-def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP):
+def login_hd(driver, email=None, password=None):
     """
-    Establish a trusted session on homedepot.com by visiting the homepage,
-    setting the ZIP code, and browsing briefly. This builds up the Akamai
-    sensor data that makes subsequent requests look legitimate.
+    Log in to Home Depot. Authenticated sessions are less likely to be
+    blocked by Akamai. Credentials are read from args or env vars
+    HD_EMAIL / HD_PASSWORD.
+
+    Returns True if login succeeded, False otherwise.
+    """
+    email = email or os.environ.get("HD_EMAIL")
+    password = password or os.environ.get("HD_PASSWORD")
+
+    if not email or not password:
+        print("   > No HD credentials provided. Skipping login.")
+        return False
+
+    print(f"   > Logging in to HD as {email}...")
+
+    try:
+        driver.get("https://www.homedepot.com/auth/view/signin")
+        time.sleep(random.uniform(4, 7))
+
+        if is_hd_blocked(driver):
+            print("   > Blocked on login page.")
+            return False
+
+        wait = WebDriverWait(driver, 15)
+
+        # Enter email
+        email_input = wait.until(EC.presence_of_element_located(
+            (By.ID, "username")))
+        email_input.click()
+        time.sleep(random.uniform(0.3, 0.6))
+        for char in email:
+            email_input.send_keys(char)
+            time.sleep(random.uniform(0.03, 0.1))
+        time.sleep(random.uniform(0.5, 1.0))
+
+        # Enter password
+        pw_input = wait.until(EC.presence_of_element_located(
+            (By.ID, "password")))
+        pw_input.click()
+        time.sleep(random.uniform(0.3, 0.6))
+        for char in password:
+            pw_input.send_keys(char)
+            time.sleep(random.uniform(0.03, 0.1))
+        time.sleep(random.uniform(0.5, 1.0))
+
+        # Click Sign In button
+        sign_in_btn = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[@type='submit' and contains(., 'Sign In')]"
+                       " | //button[@id='sign-in-button']"
+                       " | //button[contains(@class, 'sign-in')]")))
+        sign_in_btn.click()
+        time.sleep(random.uniform(5, 8))
+
+        # Check if login succeeded — look for account indicators
+        if "signin" not in driver.current_url.lower():
+            print("   > Login successful.")
+            return True
+
+        # Check for error messages
+        try:
+            error = driver.find_element(
+                By.XPATH, "//*[contains(@class, 'error') or contains(@class, 'alert')]")
+            print(f"   > Login failed: {error.text[:100]}")
+        except Exception:
+            print("   > Login may have failed (still on signin page).")
+
+        return False
+
+    except Exception as e:
+        print(f"   > Login failed: {e}")
+        return False
+
+
+def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP, hd_email=None, hd_password=None):
+    """
+    Establish a trusted session on homedepot.com by logging in (if credentials
+    provided), setting the ZIP code, and browsing briefly.
     """
     print(f"Warming up Home Depot session (ZIP: {zip_code})...")
 
@@ -581,6 +655,13 @@ def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP):
     if is_hd_blocked(driver):
         print("   > Still blocked after retry. HD session may be compromised.")
         return False
+
+    # Log in if credentials are available
+    login_hd(driver, email=hd_email, password=hd_password)
+
+    # Navigate back to homepage after login
+    driver.get("https://www.homedepot.com")
+    time.sleep(random.uniform(3, 5))
 
     wait = WebDriverWait(driver, 15)
 
@@ -932,6 +1013,10 @@ def main():
                         help="Folder to save the CSV and HTML report")
     parser.add_argument("-z", "--zip", type=str, default=DEFAULT_ZIP,
                         help="ZIP code for RebelSavings location filter (default: 94538)")
+    parser.add_argument("--hd-email", type=str, default=None,
+                        help="Home Depot login email (or set HD_EMAIL env var)")
+    parser.add_argument("--hd-password", type=str, default=None,
+                        help="Home Depot login password (or set HD_PASSWORD env var)")
     parser.add_argument("-m", "--mode", choices=[
         RunningMode.CLEAN,
         RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL, RunningMode.CHECK],
@@ -1002,7 +1087,7 @@ def main():
             print(f"Starting item collection & verification (Max: {max_items})...")
 
             # Warm up HD session first to build Akamai trust
-            warm_up_hd_session(driver, zip_code=args.zip)
+            warm_up_hd_session(driver, zip_code=args.zip, hd_email=args.hd_email, hd_password=args.hd_password)
 
             rebel_url = REBEL_SAVINGS_DEAL_URL.format(zip=args.zip)
             print(f"Navigating to: {rebel_url}")
@@ -1304,7 +1389,7 @@ def main():
         #     time.sleep(30)
 
         driver = get_driver()
-        warm_up_hd_session(driver, zip_code=args.zip)
+        warm_up_hd_session(driver, zip_code=args.zip, hd_email=args.hd_email, hd_password=args.hd_password)
         process_tracker_items(driver, deal_list, tsv_output_path)
 
 
