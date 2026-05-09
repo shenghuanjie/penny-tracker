@@ -1097,6 +1097,7 @@ def main():
 
                 consecutive_blocks = 0
                 max_consecutive_blocks = 3
+                hd_blocked_out = False  # True = stop HD checks, keep collecting
                 max_patience = 3
                 patience = 0
                 items_processed = 0
@@ -1110,8 +1111,6 @@ def main():
 
                     for row in current_rows:
                         if items_processed >= max_items:
-                            break
-                        if consecutive_blocks >= max_consecutive_blocks:
                             break
 
                         try:
@@ -1215,6 +1214,13 @@ def main():
                                 # All rows out of stock → OUT_OF_STOCK, no HD check
                                 hd_status = HDStatus.OUT_OF_STOCK
                                 print(f"   → OUT_OF_STOCK (all stores OOS)")
+                            elif hd_blocked_out:
+                                # HD checks disabled due to consecutive blocks
+                                if oos_count > 0:
+                                    hd_status = HDStatus.BLOCKED
+                                else:
+                                    hd_status = HDStatus.FAILURE
+                                print(f"   → Skipping HD check (blocked out)")
                             else:
                                 # Some or all in stock → check on HD
                                 print(f"   → Checking on HD... URL: {hd_url}")
@@ -1232,8 +1238,6 @@ def main():
                                         hd_status = check_hd_item_tab_status(
                                             driver, name=name)
                                     else:
-                                        # Blocked: use BLOCKED if partially OOS,
-                                        # FAILURE if fully in stock
                                         if oos_count > 0:
                                             hd_status = HDStatus.BLOCKED
                                         else:
@@ -1256,8 +1260,10 @@ def main():
                                         clear_hd_cookies(driver)
                                         driver.switch_to.window(main_window)
                                     if consecutive_blocks >= max_consecutive_blocks:
+                                        hd_blocked_out = True
                                         print(f"   !!! {max_consecutive_blocks} "
-                                              "consecutive blocks. Stopping HD checks.")
+                                              "consecutive blocks. Skipping HD "
+                                              "checks for remaining items.")
                                 else:
                                     consecutive_blocks = 0
                                     if len(driver.window_handles) > 1:
@@ -1296,17 +1302,13 @@ def main():
                             items_processed += 1
                             new_found += 1
 
-                            # Pacing between HD checks
-                            if hd_status not in (HDStatus.OUT_OF_STOCK,):
-                                if hd_status in (HDStatus.BLOCKED, HDStatus.FAILURE):
-                                    if consecutive_blocks < max_consecutive_blocks:
-                                        sleep_time = random.randint(90, 180)
-                                        print(f"   Sleeping {sleep_time}s...")
-                                        time.sleep(sleep_time)
-                                else:
-                                    delay = random.uniform(60, 120)
-                                    print(f"   Waiting {delay:.0f}s before next HD check...")
-                                    time.sleep(delay)
+                            # Pacing only when we actually did an HD check
+                            if not hd_blocked_out and hd_status not in (
+                                    HDStatus.OUT_OF_STOCK,
+                                    HDStatus.BLOCKED, HDStatus.FAILURE):
+                                delay = random.uniform(60, 120)
+                                print(f"   Waiting {delay:.0f}s before next HD check...")
+                                time.sleep(delay)
 
                         except Exception as e:
                             try:
@@ -1325,11 +1327,6 @@ def main():
 
                     if stop_scrolling:
                         break
-
-                    # Check stop conditions
-                    if consecutive_blocks >= max_consecutive_blocks:
-                        print("Stopping HD checks due to consecutive blocks. "
-                              "Remaining items will be saved without HD status.")
 
                     if new_found > 0:
                         patience = 0
