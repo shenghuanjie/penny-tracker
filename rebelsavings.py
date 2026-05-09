@@ -1088,6 +1088,13 @@ def main():
                     if oos_name not in seen_ids:
                         deal_list.append(current_deal)
                         seen_ids.add(oos_name)
+                    else:
+                        # Update existing entry in deal_list
+                        for d in deal_list:
+                            if d['name'] == oos_name:
+                                d['hd_status'] = HDStatus.OUT_OF_STOCK
+                                d['updated_at'] = now
+                                break
 
                     print(f"  [OOS] {oos_name[:60]}")
 
@@ -1227,6 +1234,13 @@ def main():
                     if not duplicated_item:
                         deal_list.append(current_deal)
                         seen_ids.add(name)
+                    else:
+                        # Update existing entry in deal_list
+                        for d in deal_list:
+                            if d['name'] == name:
+                                d['hd_status'] = hd_status
+                                d['updated_at'] = current_deal['updated_at']
+                                break
 
                     items_checked += 1
 
