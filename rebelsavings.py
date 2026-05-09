@@ -1069,6 +1069,23 @@ def main():
 
             main_window = driver.current_window_handle
 
+            # Sort by "Added" (newest first) so we can stop at 30 days
+            try:
+                # Look for the sort link/button for "Newest to Oldest"
+                sort_link = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, "//a[contains(text(), 'Newest')]"
+                                   " | //button[contains(text(), 'Newest')]"
+                                   " | //th[contains(text(), 'Added')]")))
+                driver.execute_script("arguments[0].click();", sort_link)
+                time.sleep(random.uniform(2, 4))
+                # Wait for table to refresh
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
+                print("Sorted by Added (newest first).")
+            except Exception as e:
+                print(f"Could not sort by Added (non-fatal): {e}")
+
             # Enable "Show Out of Stock" so we can see stock status per store
             toggle_oos_filter(driver, enable=True)
 
@@ -1085,7 +1102,9 @@ def main():
                 items_processed = 0
                 hd_checks_done = 0
 
-                while items_processed < max_items:
+                stop_scrolling = False
+
+                while items_processed < max_items and not stop_scrolling:
                     current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
                     new_found = 0
 
@@ -1096,6 +1115,24 @@ def main():
                             break
 
                         try:
+                            # Check "Added" date — stop if older than 30 days
+                            tds = row.find_elements(By.TAG_NAME, "td")
+                            for td in tds:
+                                td_text = td.text.strip()
+                                try:
+                                    added_date = datetime.datetime.strptime(
+                                        td_text, "%b %d, %Y")
+                                    days_ago = (datetime.datetime.now() - added_date).days
+                                    if days_ago > 30:
+                                        print(f"\nItem added {days_ago} days ago "
+                                              f"({td_text}). Stopping scroll.")
+                                        stop_scrolling = True
+                                        break
+                                except ValueError:
+                                    continue
+                            if stop_scrolling:
+                                break
+
                             name_elem = row.find_element(By.CLASS_NAME, "title-column")
                             name = name_elem.text.splitlines()[0].strip()
                             if not name:
@@ -1286,12 +1323,13 @@ def main():
                             print(f"Skipping row due to error: {e}")
                             continue
 
+                    if stop_scrolling:
+                        break
+
                     # Check stop conditions
                     if consecutive_blocks >= max_consecutive_blocks:
                         print("Stopping HD checks due to consecutive blocks. "
                               "Remaining items will be saved without HD status.")
-                        # Continue collecting remaining items as unchecked
-                        # but don't break — let scroll logic handle it
 
                     if new_found > 0:
                         patience = 0
