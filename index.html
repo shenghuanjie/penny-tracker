@@ -1,26 +1,64 @@
 
     <html><head><style>
         body { font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }
-        h2 { color: #333; }
-        table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; vertical-align: middle; }
-        th { background: #f96302; color: white; font-weight: bold; } /* Home Depot Orange */
+        h2 { color: #333; margin-bottom: 5px; }
+
+        /* Tabs */
+        .tabs { display: flex; gap: 0; margin-bottom: 0; }
+        .tab { padding: 12px 24px; cursor: pointer; border: 1px solid #ddd;
+                border-bottom: none; border-radius: 8px 8px 0 0; background: #e8e8e8;
+                font-weight: bold; font-size: 15px; color: #555; user-select: none; }
+        .tab:hover { background: #f5f5f5; }
+        .tab.active { background: white; color: #333; border-bottom: 2px solid white;
+                       margin-bottom: -1px; position: relative; z-index: 1; }
+        .tab.hd.active { color: #f96302; }
+        .tab.fb.active { color: #1877f2; }
+        .tab-content { display: none; border: 1px solid #ddd; border-radius: 0 8px 8px 8px;
+                        background: white; padding: 0; }
+        .tab-content.active { display: block; }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; background: white; }
+        th, td { padding: 12px; border: 1px solid #eee; text-align: left; vertical-align: middle; }
+        th { color: white; font-weight: bold; position: sticky; top: 0; }
+        .hd-table th { background: #f96302; }
+        .fb-table th { background: #1877f2; }
         tr:nth-child(even) { background-color: #f9f9f9; }
         img { width: 70px; height: auto; border-radius: 4px; object-fit: cover; }
 
         /* Status Colors */
-        .penny { color: #3498db; font-weight: bold; }             /* Blue: Likely Penny */
-        .not_penny { color: #e74c3c; font-weight: bold; }         /* Red: Definite No */
-        .penny_candidate { color: #f39c12; font-weight: bold; }   /* Orange: Strong Maybe */
-        .clearance { color: #2ecc71; font-weight: bold; }         /* Green: Verified Clearance */
-        .error { color: #8e44ad; font-weight: bold; }             /* Purple: Code Exception */
-        .failure { color: #95a5a6; font-style: italic; }          /* Grey: Page Crash/Missing Data */
-        .out_of_stock { color: #7f8c8d; font-weight: bold; font-style: italic; } /* Grey: Out of Stock on RebelSavings */
-        .blocked { color: #c0392b; font-weight: bold; text-decoration: underline; } /* Dark Red: Bot Detected */
+        .penny { color: #3498db; font-weight: bold; }
+        .not_penny { color: #e74c3c; font-weight: bold; }
+        .penny_candidate { color: #f39c12; font-weight: bold; }
+        .clearance { color: #2ecc71; font-weight: bold; }
+        .error { color: #8e44ad; font-weight: bold; }
+        .failure { color: #95a5a6; font-style: italic; }
+        .out_of_stock { color: #7f8c8d; font-weight: bold; font-style: italic; }
+        .blocked { color: #c0392b; font-weight: bold; text-decoration: underline; }
+
+        /* FB-specific */
+        .sku { font-weight: bold; color: #e67e22; }
+        .upc { font-weight: bold; color: #27ae60; }
+        .snippet { max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+                    white-space: nowrap; font-size: 13px; color: #555; }
+        .date { white-space: nowrap; color: #888; }
+        .fb-img { max-width: 120px; max-height: 90px; }
+        a { color: #1877f2; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .meta { color: #888; font-size: 13px; margin: 4px 0 12px 0; }
 
     </style></head><body>
-        <h2>Home Depot Clearance Report</h2>
-        <table><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Updated At</th><th>Link</th></tr><tr>
+        <h2>Penny Deal Tracker</h2>
+        <p class="meta">Updated: 2026-05-10 21:21</p>
+
+        <div class="tabs">
+            <div class="tab hd active" onclick="switchTab('hd')">RebelSavings (119)</div>
+            
+        </div>
+
+        <!-- RebelSavings Tab -->
+        <div id="tab-hd" class="tab-content active">
+        <table class="hd-table"><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Updated At</th><th>Link</th></tr><tr>
             <td><img src="https://images.thdstatic.com/productImages/f4fdd3e9-94e9-4dd0-894e-7b147ffe133e/svn/porter-cable-staplers-ts056-64_100.jpg"></td>
             <td>Porter-Cable Pneumatic 18-Gauge 3/8 in. Crown Stapler</td>
             <td>$31.47</td>
@@ -853,4 +891,13 @@
             <td class="blocked">BLOCKED</td>
             <td>2026-05-06 22:50:40</td>
             <td><a href="https://www.homedepot.com/p/Commercial-Electric-Flexinstall-Oval-16-in-Brushed-Nickel-Indoor-Integrated-LED-Recessed-Ceiling-Light-with-5CCT-Plus-DuoBright-91967/324108986?store=6636" target="_blank">Link</a></td>
-        </tr></table></body></html>
+        </tr></table></div>
+    <script>
+    function switchTab(tab) {
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+        document.getElementById('tab-' + tab).classList.add('active');
+        document.querySelector('.tab.' + tab).classList.add('active');
+    }
+    </script>
+    </body></html>
