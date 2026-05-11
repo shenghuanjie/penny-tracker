@@ -63,8 +63,9 @@ Thumbs.db
 *.log
 logs/
 
-# personal cookie
+# personal cookies
 cookie.txt
+fb_cookies.json
 
 # skip profile
 hd_profile/*

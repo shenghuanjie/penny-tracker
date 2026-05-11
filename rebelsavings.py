@@ -1,13 +1,17 @@
 import datetime
+import logging
 import re
 import shutil
 import subprocess
+import sys
 import time
 import os
 import argparse
 import random
 
 import undetected_chromedriver as uc
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -23,6 +27,10 @@ TSV_FILENAME = "rebel_final_report.tsv"
 BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
 DEFAULT_ZIP = "94538"
 REBEL_SAVINGS_DEAL_URL = "https://www.rebelsavings.com/home-depot?zip={zip}"
+
+DEFAULT_CHROME_PROFILE = "/Users/shengh4/Library/Application Support/Google/Chrome"
+DEFAULT_PROFILE_DIR = "Profile 1"
+DEFAULT_REMOTE_DEBUG = "localhost:9222"
 
 
 def human_click(driver, element):
@@ -117,11 +125,31 @@ class HDStatus:
     BLOCKED = 'blocked'
 
 
+def _load_fb_deals(output_dir):
+    """Load FB deals from fb_deals.tsv if it exists."""
+    fb_tsv = os.path.join(output_dir, "fb_deals.tsv")
+    if not os.path.isfile(fb_tsv):
+        return []
+    fb_fields = ["post_id", "post_date", "text_snippet", "skus", "upcs",
+                 "hd_links", "images", "scraped_at", "padding"]
+    deals = []
+    with open(fb_tsv, "r", encoding="utf-8") as f:
+        f.readline()  # skip header
+        for row in f:
+            parts = row.strip().split("\t")
+            while len(parts) < len(fb_fields):
+                parts.append("")
+            if len(parts) >= len(fb_fields) - 1:
+                entry = dict(zip(fb_fields, parts[:len(fb_fields)]))
+                deals.append(entry)
+    return deals
+
+
 def generate_html_report(deals, output_path):
-    """Creates a visual HTML report with images, status colors, and timestamps."""
+    """Creates a visual HTML report with images, status colors, and timestamps.
+    Includes a second tab for Facebook group deals if fb_deals.tsv exists."""
 
     # --- SORTING LOGIC ---
-    # Define priority: Penny items first, then candidates, then clearance, then failures.
     status_priority = {
         'penny': 0,
         'penny_candidate': 1,
@@ -134,36 +162,79 @@ def generate_html_report(deals, output_path):
         'unchecked': 8
     }
 
-    # Sort in-place
     deals.sort(key=lambda d: (
         status_priority.get(d.get('hd_status'), 99),
         d.get('original_timestamp', '')
     ))
-    # ---------------------
 
-    html = """
+    # Load FB deals
+    output_dir = os.path.dirname(output_path) or "."
+    fb_deals = _load_fb_deals(output_dir)
+    has_fb = len(fb_deals) > 0
+
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    html = f"""
     <html><head><style>
-        body { font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }
-        h2 { color: #333; }
-        table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; vertical-align: middle; }
-        th { background: #f96302; color: white; font-weight: bold; } /* Home Depot Orange */
-        tr:nth-child(even) { background-color: #f9f9f9; }
-        img { width: 70px; height: auto; border-radius: 4px; object-fit: cover; }
+        body {{ font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }}
+        h2 {{ color: #333; margin-bottom: 5px; }}
+
+        /* Tabs */
+        .tabs {{ display: flex; gap: 0; margin-bottom: 0; }}
+        .tab {{ padding: 12px 24px; cursor: pointer; border: 1px solid #ddd;
+                border-bottom: none; border-radius: 8px 8px 0 0; background: #e8e8e8;
+                font-weight: bold; font-size: 15px; color: #555; user-select: none; }}
+        .tab:hover {{ background: #f5f5f5; }}
+        .tab.active {{ background: white; color: #333; border-bottom: 2px solid white;
+                       margin-bottom: -1px; position: relative; z-index: 1; }}
+        .tab.hd.active {{ color: #f96302; }}
+        .tab.fb.active {{ color: #1877f2; }}
+        .tab-content {{ display: none; border: 1px solid #ddd; border-radius: 0 8px 8px 8px;
+                        background: white; padding: 0; }}
+        .tab-content.active {{ display: block; }}
+
+        /* Tables */
+        table {{ width: 100%; border-collapse: collapse; background: white; }}
+        th, td {{ padding: 12px; border: 1px solid #eee; text-align: left; vertical-align: middle; }}
+        th {{ color: white; font-weight: bold; position: sticky; top: 0; }}
+        .hd-table th {{ background: #f96302; }}
+        .fb-table th {{ background: #1877f2; }}
+        tr:nth-child(even) {{ background-color: #f9f9f9; }}
+        img {{ width: 70px; height: auto; border-radius: 4px; object-fit: cover; }}
 
         /* Status Colors */
-        .penny { color: #3498db; font-weight: bold; }             /* Blue: Likely Penny */
-        .not_penny { color: #e74c3c; font-weight: bold; }         /* Red: Definite No */
-        .penny_candidate { color: #f39c12; font-weight: bold; }   /* Orange: Strong Maybe */
-        .clearance { color: #2ecc71; font-weight: bold; }         /* Green: Verified Clearance */
-        .error { color: #8e44ad; font-weight: bold; }             /* Purple: Code Exception */
-        .failure { color: #95a5a6; font-style: italic; }          /* Grey: Page Crash/Missing Data */
-        .out_of_stock { color: #7f8c8d; font-weight: bold; font-style: italic; } /* Grey: Out of Stock on RebelSavings */
-        .blocked { color: #c0392b; font-weight: bold; text-decoration: underline; } /* Dark Red: Bot Detected */
+        .penny {{ color: #3498db; font-weight: bold; }}
+        .not_penny {{ color: #e74c3c; font-weight: bold; }}
+        .penny_candidate {{ color: #f39c12; font-weight: bold; }}
+        .clearance {{ color: #2ecc71; font-weight: bold; }}
+        .error {{ color: #8e44ad; font-weight: bold; }}
+        .failure {{ color: #95a5a6; font-style: italic; }}
+        .out_of_stock {{ color: #7f8c8d; font-weight: bold; font-style: italic; }}
+        .blocked {{ color: #c0392b; font-weight: bold; text-decoration: underline; }}
+
+        /* FB-specific */
+        .sku {{ font-weight: bold; color: #e67e22; }}
+        .upc {{ font-weight: bold; color: #27ae60; }}
+        .snippet {{ max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+                    white-space: nowrap; font-size: 13px; color: #555; }}
+        .date {{ white-space: nowrap; color: #888; }}
+        .fb-img {{ max-width: 120px; max-height: 90px; }}
+        a {{ color: #1877f2; text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
+        .meta {{ color: #888; font-size: 13px; margin: 4px 0 12px 0; }}
 
     </style></head><body>
-        <h2>Home Depot Clearance Report</h2>
-        <table><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Updated At</th><th>Link</th></tr>"""
+        <h2>Penny Deal Tracker</h2>
+        <p class="meta">Updated: {now_str}</p>
+
+        <div class="tabs">
+            <div class="tab hd active" onclick="switchTab('hd')">RebelSavings ({len(deals)})</div>
+            {'<div class="tab fb" onclick="switchTab(\'fb\')">Facebook Group (' + str(len(fb_deals)) + ')</div>' if has_fb else ''}
+        </div>
+
+        <!-- RebelSavings Tab -->
+        <div id="tab-hd" class="tab-content active">
+        <table class="hd-table"><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Updated At</th><th>Link</th></tr>"""
 
     for d in deals:
         status = d.get('hd_status', 'unchecked')
@@ -173,11 +244,8 @@ def generate_html_report(deals, output_path):
         name = d.get('name', 'Unknown')
         price = d.get('price', 'N/A')
         url = d.get('url', '#')
-
-        # safely get updated_at, default to empty string if missing
         timestamp = d.get('updated_at', '')
 
-        # Added timestamp cell before the Link cell
         html += f"""<tr>
             <td><img src="{image_src}"></td>
             <td>{name}</td>
@@ -187,7 +255,71 @@ def generate_html_report(deals, output_path):
             <td><a href="{url}" target="_blank">Link</a></td>
         </tr>"""
 
-    html += "</table></body></html>"
+    html += "</table></div>"
+
+    # --- Facebook Tab ---
+    if has_fb:
+        html += """
+        <div id="tab-fb" class="tab-content">
+        <table class="fb-table"><tr><th>Image</th><th>SKU</th><th>UPC</th><th>HD Link</th>
+            <th>Post Snippet</th><th>Date</th></tr>"""
+
+        for deal in fb_deals:
+            images = deal.get("images", "").split(",")
+            img_html = ""
+            if images and images[0]:
+                img_html = f'<img class="fb-img" src="{images[0]}" loading="lazy">'
+
+            skus = deal.get("skus", "")
+            sku_html = ""
+            if skus:
+                for sku in skus.split(","):
+                    sku = sku.strip()
+                    if sku:
+                        hd_search = f"https://www.homedepot.com/s/{sku}"
+                        sku_html += f'<a class="sku" href="{hd_search}" target="_blank">{sku}</a><br>'
+
+            upcs = deal.get("upcs", "")
+            upc_html = ""
+            if upcs:
+                for upc_val in upcs.split(","):
+                    upc_val = upc_val.strip()
+                    if upc_val:
+                        upc_html += f'<span class="upc">{upc_val}</span><br>'
+
+            hd_links = deal.get("hd_links", "")
+            link_html = ""
+            if hd_links:
+                for link in hd_links.split(","):
+                    link = link.strip()
+                    if link and "homedepot.com" in link:
+                        link_html += f'<a href="{link}" target="_blank">View</a><br>'
+
+            snippet = deal.get("text_snippet", "")
+            date = deal.get("post_date", "")
+
+            html += f"""<tr>
+                <td>{img_html}</td>
+                <td>{sku_html or '—'}</td>
+                <td>{upc_html or '—'}</td>
+                <td>{link_html or '—'}</td>
+                <td class="snippet" title="{snippet}">{snippet[:100]}</td>
+                <td class="date">{date}</td>
+            </tr>"""
+
+        html += "</table></div>"
+
+    # --- Tab switching JS ---
+    html += """
+    <script>
+    function switchTab(tab) {
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+        document.getElementById('tab-' + tab).classList.add('active');
+        document.querySelector('.tab.' + tab).classList.add('active');
+    }
+    </script>
+    </body></html>"""
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -499,28 +631,59 @@ def has_git_updates(repo_path="."):
         return False
 
 
-def get_driver():
+def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
+    """Create a browser driver.
+
+    Args:
+        chrome_profile: Path to Chrome user-data-dir (your real Chrome profile).
+                        Chrome must be fully closed when using this.
+        profile_dir:    Profile directory name inside user-data-dir (e.g. "Default",
+                        "Profile 1"). Only used with --chrome-profile.
+        remote_debug:   Connect to an already-running Chrome via debugging port
+                        (e.g. "localhost:9222"). Launch Chrome yourself with
+                        --remote-debugging-port=9222 first.
+    """
+    # --- Remote debugging: attach to existing Chrome ---
+    if remote_debug:
+        logging.info("Connecting to Chrome at %s via remote debugging", remote_debug)
+        options = webdriver.ChromeOptions()
+        options.debugger_address = remote_debug
+        options.page_load_strategy = 'eager'
+        driver = webdriver.Chrome(options=options)
+        driver.set_page_load_timeout(60)
+        return driver
+
+    # --- Chrome profile: use your real browser profile ---
+    if chrome_profile:
+        logging.info("Launching Chrome with profile: %s", chrome_profile)
+        options = webdriver.ChromeOptions()
+        options.add_argument(f"--user-data-dir={chrome_profile}")
+        if profile_dir:
+            options.add_argument(f"--profile-directory={profile_dir}")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--window-size=1920,1080")
+        options.page_load_strategy = 'eager'
+        prefs = {
+            "profile.default_content_setting_values.popups": 1,
+            "profile.default_content_setting_values.notifications": 2,
+        }
+        options.add_experimental_option("prefs", prefs)
+        driver = webdriver.Chrome(options=options)
+        driver.set_page_load_timeout(60)
+        return driver
+
+    # --- Default: undetected_chromedriver ---
+    logging.info("Launching undetected Chrome")
     options = uc.ChromeOptions()
-    # 1. Disable the popup blocking flag explicitly
     options.add_argument("--disable-popup-blocking")
-
-    # Don't wait for full page load — React SPAs fire DOMContentLoaded
-    # early but keep loading JS bundles that can cause 300s timeouts
     options.page_load_strategy = 'eager'
-
-    # 2. Set the content setting preference to '1' (Allow) for popups
-    #    0 = Default, 1 = Allow, 2 = Block
     prefs = {
         "profile.default_content_setting_values.popups": 1,
         "profile.default_content_setting_values.notifications": 2,
     }
     options.add_experimental_option("prefs", prefs)
-
-    # Initialize the driver with these options
     options.add_argument("--window-size=1920,1080")
-    # Force version 138 to match your browser if needed, else remove version_main
     driver = uc.Chrome(options=options, version_main=138)
-    # Set page load timeout to 60s as a safety net
     driver.set_page_load_timeout(60)
     return driver
 
@@ -982,6 +1145,19 @@ def main():
                         help="ZIP code for RebelSavings location filter (default: 94538)")
     parser.add_argument("--hd-login", action="store_true",
                         help="Pause for manual HD login before scraping (handle 2FA/passkey yourself)")
+    parser.add_argument("--chrome-profile", type=str, default=DEFAULT_CHROME_PROFILE,
+                        help="Path to Chrome user-data-dir (default: %(default)s). "
+                             "Chrome must be fully closed. Use --no-chrome-profile to use undetected_chromedriver.")
+    parser.add_argument("--profile-dir", type=str, default=DEFAULT_PROFILE_DIR,
+                        help="Profile directory name inside user-data-dir (default: %(default)s).")
+    parser.add_argument("--no-chrome-profile", action="store_true",
+                        help="Ignore --chrome-profile and use undetected_chromedriver instead.")
+    parser.add_argument("--remote-debug", type=str, default=DEFAULT_REMOTE_DEBUG,
+                        help="Connect to running Chrome via remote debugging (default: %(default)s). "
+                             "Launch Chrome with --remote-debugging-port=9222 first. "
+                             "Use --no-remote-debug to disable.")
+    parser.add_argument("--no-remote-debug", action="store_true",
+                        help="Don't use remote debugging, fall back to --chrome-profile or undetected_chromedriver.")
     parser.add_argument("-m", "--mode", choices=[
         RunningMode.CLEAN,
         RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL, RunningMode.CHECK],
@@ -989,6 +1165,40 @@ def main():
                         help="Running mode.")
 
     args = parser.parse_args()
+
+    # Handle opt-out flags
+    if args.no_remote_debug:
+        args.remote_debug = None
+    if args.no_chrome_profile:
+        args.chrome_profile = None
+        args.profile_dir = None
+
+    # --- LOGGING SETUP ---
+    log_path = os.path.join(args.output_dir or ".", "rebelsavings.log")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_path, encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    # Redirect print() to also go to the log file
+    class _TeeWriter:
+        """Write to both stdout and a log file."""
+        def __init__(self, log_file, orig_stdout):
+            self._log = open(log_file, "a", encoding="utf-8")
+            self._orig = orig_stdout
+        def write(self, msg):
+            self._orig.write(msg)
+            self._log.write(msg)
+        def flush(self):
+            self._orig.flush()
+            self._log.flush()
+    sys.stdout = _TeeWriter(log_path, sys.__stdout__)
+    sys.stderr = _TeeWriter(log_path, sys.__stderr__)
+    logging.info("Logging to %s", log_path)
 
     if args.output_dir and not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
@@ -1044,7 +1254,9 @@ def main():
 
     # --- SEARCH AND CHECK (MERGED) ---
     if args.mode in [RunningMode.SEARCH, RunningMode.ALL]:
-        driver = get_driver()
+        driver = get_driver(chrome_profile=args.chrome_profile,
+                            profile_dir=args.profile_dir,
+                            remote_debug=args.remote_debug)
         try:
             seen_ids = set(deal['name'] for deal in deal_list)
             max_items = args.max_items if args.max_items is not None else float('inf')
@@ -1390,7 +1602,9 @@ def main():
         # if has_git_updates():
         #     time.sleep(30)
 
-        driver = get_driver()
+        driver = get_driver(chrome_profile=args.chrome_profile,
+                            profile_dir=args.profile_dir,
+                            remote_debug=args.remote_debug)
         warm_up_hd_session(driver, zip_code=args.zip, hd_login=args.hd_login)
         process_tracker_items(driver, deal_list, tsv_output_path)
 
