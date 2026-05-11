@@ -28,6 +28,10 @@ BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
 DEFAULT_ZIP = "94538"
 REBEL_SAVINGS_DEAL_URL = "https://www.rebelsavings.com/home-depot?zip={zip}"
 
+DEFAULT_CHROME_PROFILE = "/Users/shengh4/Library/Application Support/Google/Chrome"
+DEFAULT_PROFILE_DIR = "Profile 1"
+DEFAULT_REMOTE_DEBUG = "localhost:9222"
+
 
 def human_click(driver, element):
     """
@@ -1141,15 +1145,19 @@ def main():
                         help="ZIP code for RebelSavings location filter (default: 94538)")
     parser.add_argument("--hd-login", action="store_true",
                         help="Pause for manual HD login before scraping (handle 2FA/passkey yourself)")
-    parser.add_argument("--chrome-profile", type=str, default=None,
-                        help="Path to Chrome user-data-dir to use your real browser profile. "
-                             "Chrome must be fully closed. Find it at chrome://version/ (Profile Path parent).")
-    parser.add_argument("--profile-dir", type=str, default=None,
-                        help="Profile directory name inside user-data-dir (e.g. 'Default', 'Profile 1'). "
-                             "Only used with --chrome-profile.")
-    parser.add_argument("--remote-debug", type=str, default=None,
-                        help="Connect to running Chrome via remote debugging (e.g. 'localhost:9222'). "
-                             "Launch Chrome with --remote-debugging-port=9222 first.")
+    parser.add_argument("--chrome-profile", type=str, default=DEFAULT_CHROME_PROFILE,
+                        help="Path to Chrome user-data-dir (default: %(default)s). "
+                             "Chrome must be fully closed. Use --no-chrome-profile to use undetected_chromedriver.")
+    parser.add_argument("--profile-dir", type=str, default=DEFAULT_PROFILE_DIR,
+                        help="Profile directory name inside user-data-dir (default: %(default)s).")
+    parser.add_argument("--no-chrome-profile", action="store_true",
+                        help="Ignore --chrome-profile and use undetected_chromedriver instead.")
+    parser.add_argument("--remote-debug", type=str, default=DEFAULT_REMOTE_DEBUG,
+                        help="Connect to running Chrome via remote debugging (default: %(default)s). "
+                             "Launch Chrome with --remote-debugging-port=9222 first. "
+                             "Use --no-remote-debug to disable.")
+    parser.add_argument("--no-remote-debug", action="store_true",
+                        help="Don't use remote debugging, fall back to --chrome-profile or undetected_chromedriver.")
     parser.add_argument("-m", "--mode", choices=[
         RunningMode.CLEAN,
         RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL, RunningMode.CHECK],
@@ -1157,6 +1165,13 @@ def main():
                         help="Running mode.")
 
     args = parser.parse_args()
+
+    # Handle opt-out flags
+    if args.no_remote_debug:
+        args.remote_debug = None
+    if args.no_chrome_profile:
+        args.chrome_profile = None
+        args.profile_dir = None
 
     # --- LOGGING SETUP ---
     log_path = os.path.join(args.output_dir or ".", "rebelsavings.log")
