@@ -632,6 +632,39 @@ def has_git_updates(repo_path="."):
         return False
 
 
+CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+def _is_port_open(host, port):
+    """Check if a TCP port is accepting connections."""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except (ConnectionRefusedError, OSError):
+        return False
+
+
+def _launch_chrome_debug(port, user_data_dir=None, profile_dir=None):
+    """Launch Chrome with --remote-debugging-port and wait for it to be ready."""
+    cmd = [CHROME_BINARY, f"--remote-debugging-port={port}"]
+    if user_data_dir:
+        cmd.append(f"--user-data-dir={user_data_dir}")
+    if profile_dir:
+        cmd.append(f"--profile-directory={profile_dir}")
+
+    logging.info("Auto-launching Chrome: %s", " ".join(cmd))
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Wait up to 15s for Chrome to start listening
+    for _ in range(30):
+        time.sleep(0.5)
+        if _is_port_open("localhost", port):
+            logging.info("Chrome is ready on port %d", port)
+            return
+    raise RuntimeError(f"Chrome did not start on port {port} within 15 seconds")
+
+
 def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
     """Create a browser driver.
 
@@ -648,6 +681,11 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
 
     # --- Remote debugging: attach to existing Chrome ---
     if remote_debug:
+        host, port = remote_debug.split(":")
+        port = int(port)
+        # Auto-launch Chrome if debug port isn't reachable
+        if not _is_port_open(host, port):
+            _launch_chrome_debug(port, chrome_profile, profile_dir)
         logging.info("Connecting to Chrome at %s via remote debugging", remote_debug)
         options = webdriver.ChromeOptions()
         options.debugger_address = remote_debug
