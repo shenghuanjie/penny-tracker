@@ -10,10 +10,12 @@ import time
 
 import undetected_chromedriver as uc
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ── Constants ──────────────────────────────────────────────────────────
 FB_GROUP_URL = "https://www.facebook.com/groups/4053530654966334/"
@@ -41,13 +43,15 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
                         (e.g. "localhost:9222"). Launch Chrome yourself with
                         --remote-debugging-port=9222 first.
     """
+    service = ChromeService(ChromeDriverManager().install())
+
     # --- Remote debugging: attach to existing Chrome ---
     if remote_debug:
         logging.info("Connecting to Chrome at %s via remote debugging", remote_debug)
         options = webdriver.ChromeOptions()
         options.debugger_address = remote_debug
         options.page_load_strategy = 'eager'
-        driver = webdriver.Chrome(options=options)
+        driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(60)
         return driver
 
@@ -66,7 +70,7 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
             "profile.default_content_setting_values.notifications": 2,
         }
         options.add_experimental_option("prefs", prefs)
-        driver = webdriver.Chrome(options=options)
+        driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(60)
         return driver
 
