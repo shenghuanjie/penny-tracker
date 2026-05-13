@@ -851,9 +851,21 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
     else:
         logging.info("Launching undetected Chrome (no profile)")
 
-    driver = uc.Chrome(options=options, version_main=138)
-    driver.set_page_load_timeout(60)
-    return driver
+    # UC can be flaky connecting to Chrome — retry up to 3 times
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            logging.info("UC launch attempt %d/3...", attempt)
+            driver = uc.Chrome(options=options, version_main=138)
+            driver.set_page_load_timeout(60)
+            logging.info("UC connected successfully")
+            return driver
+        except Exception as e:
+            last_err = e
+            logging.warning("UC attempt %d failed: %s", attempt, e)
+            if attempt < 3:
+                time.sleep(3)
+    raise last_err
 
 
 def is_hd_blocked(driver):
