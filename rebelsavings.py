@@ -678,14 +678,17 @@ def _launch_chrome_debug(port, user_data_dir=None, profile_dir=None):
             subprocess.run(["pkill", "-f", "Google Chrome"], capture_output=True)
             time.sleep(2)
 
-    cmd = [CHROME_BINARY, f"--remote-debugging-port={port}"]
+    cmd = [CHROME_BINARY,
+           f"--remote-debugging-port={port}",
+           "--no-first-run",
+           "--no-default-browser-check"]
     if user_data_dir:
         cmd.append(f"--user-data-dir={user_data_dir}")
     if profile_dir:
         cmd.append(f"--profile-directory={profile_dir}")
 
     logging.info("Launching Chrome: %s", " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     # Wait up to 30s for Chrome to start listening
     for i in range(60):
@@ -695,13 +698,25 @@ def _launch_chrome_debug(port, user_data_dir=None, profile_dir=None):
             return
         # Check if process died
         if proc.poll() is not None:
+            stdout = proc.stdout.read().decode(errors="replace")
             stderr = proc.stderr.read().decode(errors="replace")
             raise RuntimeError(
-                f"Chrome exited with code {proc.returncode}. stderr:\n{stderr}")
+                f"Chrome exited with code {proc.returncode}.\n"
+                f"stdout: {stdout[:500]}\nstderr: {stderr[:500]}")
+        # Log progress every 5s
+        if i > 0 and i % 10 == 0:
+            logging.info("Waiting for Chrome on port %d... (%ds)", port, i // 2)
 
+    # Timed out — capture whatever output Chrome produced
+    try:
+        stdout, stderr = proc.communicate(timeout=2)
+        output = f"stdout: {stdout.decode(errors='replace')[:500]}\n" \
+                 f"stderr: {stderr.decode(errors='replace')[:500]}"
+    except subprocess.TimeoutExpired:
+        output = "(Chrome still running but not listening)"
     raise RuntimeError(
-        f"Chrome did not start on port {port} within 30 seconds. "
-        f"Try quitting Chrome (Cmd+Q) and running the script again.")
+        f"Chrome did not start on port {port} within 30 seconds.\n{output}\n"
+        f"Try running manually:\n  {' '.join(cmd)}")
 
 
 def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
