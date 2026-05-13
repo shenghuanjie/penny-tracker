@@ -857,7 +857,7 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
     for attempt in range(1, 4):
         try:
             logging.info("UC launch attempt %d/3...", attempt)
-            driver = uc.Chrome(options=options)
+            driver = uc.Chrome(options=options, version_main=138)
             driver.set_page_load_timeout(60)
             logging.info("UC connected successfully")
             return driver
