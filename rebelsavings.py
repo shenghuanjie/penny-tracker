@@ -837,6 +837,14 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
                      chrome_profile, profile_dir or "Default")
         # UC needs Chrome closed to use the profile
         _kill_chrome()
+        # Remove lock files Chrome leaves behind
+        for lock_file in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
+            lock_path = os.path.join(chrome_profile, lock_file)
+            try:
+                os.remove(lock_path)
+            except FileNotFoundError:
+                pass
+        time.sleep(2)  # extra settle time for profile release
         options.add_argument(f"--user-data-dir={chrome_profile}")
         if profile_dir:
             options.add_argument(f"--profile-directory={profile_dir}")

@@ -202,6 +202,13 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
         logging.info("Launching undetected Chrome with profile: %s/%s",
                      chrome_profile, profile_dir or "Default")
         _kill_chrome()
+        for lock_file in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
+            lock_path = os.path.join(chrome_profile, lock_file)
+            try:
+                os.remove(lock_path)
+            except FileNotFoundError:
+                pass
+        time.sleep(2)
         options.add_argument(f"--user-data-dir={chrome_profile}")
         if profile_dir:
             options.add_argument(f"--profile-directory={profile_dir}")
