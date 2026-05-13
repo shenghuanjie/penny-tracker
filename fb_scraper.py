@@ -208,16 +208,35 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
                 os.remove(lock_path)
             except FileNotFoundError:
                 pass
-        time.sleep(2)
-        options.add_argument(f"--user-data-dir={chrome_profile}")
+        time.sleep(3)
+        debug_data_dir = _setup_debug_profile(chrome_profile, profile_dir)
+        options.add_argument(f"--user-data-dir={debug_data_dir}")
         if profile_dir:
             options.add_argument(f"--profile-directory={profile_dir}")
     else:
         logging.info("Launching undetected Chrome (no profile)")
 
-    driver = uc.Chrome(options=options, version_main=138)
-    driver.set_page_load_timeout(60)
-    return driver
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            logging.info("UC launch attempt %d/3...", attempt)
+            driver = uc.Chrome(options=options)
+            driver.set_page_load_timeout(60)
+            logging.info("UC connected successfully")
+            return driver
+        except Exception as e:
+            last_err = e
+            logging.warning("UC attempt %d failed: %s", attempt, e)
+            if attempt < 3:
+                _kill_chrome()
+                if chrome_profile:
+                    for lf in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
+                        try:
+                            os.remove(os.path.join(DEBUG_USER_DATA_DIR, lf))
+                        except FileNotFoundError:
+                            pass
+                time.sleep(5)
+    raise last_err
 
 
 # ── Cookie Auth ────────────────────────────────────────────────────────

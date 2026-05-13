@@ -835,7 +835,6 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
     if chrome_profile:
         logging.info("Launching undetected Chrome with profile: %s/%s",
                      chrome_profile, profile_dir or "Default")
-        # UC needs Chrome closed to use the profile
         _kill_chrome()
         # Remove lock files Chrome leaves behind
         for lock_file in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
@@ -844,16 +843,39 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
                 os.remove(lock_path)
             except FileNotFoundError:
                 pass
-        time.sleep(2)  # extra settle time for profile release
-        options.add_argument(f"--user-data-dir={chrome_profile}")
+        time.sleep(3)  # settle time for profile release
+        # Use the Chrome-Debug dir with symlink to avoid "default dir" issues
+        debug_data_dir = _setup_debug_profile(chrome_profile, profile_dir)
+        options.add_argument(f"--user-data-dir={debug_data_dir}")
         if profile_dir:
             options.add_argument(f"--profile-directory={profile_dir}")
     else:
         logging.info("Launching undetected Chrome (no profile)")
 
-    driver = uc.Chrome(options=options, version_main=138)
-    driver.set_page_load_timeout(60)
-    return driver
+    # UC can be flaky connecting to Chrome — retry up to 3 times
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            logging.info("UC launch attempt %d/3...", attempt)
+            driver = uc.Chrome(options=options)
+            driver.set_page_load_timeout(60)
+            logging.info("UC connected successfully")
+            return driver
+        except Exception as e:
+            last_err = e
+            logging.warning("UC attempt %d failed: %s", attempt, e)
+            if attempt < 3:
+                # Kill any zombie Chrome and clean locks
+                _kill_chrome()
+                if chrome_profile:
+                    for lf in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
+                        try:
+                            os.remove(os.path.join(
+                                DEBUG_USER_DATA_DIR, lf))
+                        except FileNotFoundError:
+                            pass
+                time.sleep(5)
+    raise last_err
 
 
 def is_hd_blocked(driver):
