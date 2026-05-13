@@ -28,6 +28,7 @@ TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 DEFAULT_CHROME_PROFILE = "/Users/shengh4/Library/Application Support/Google/Chrome"
 DEFAULT_PROFILE_DIR = "Profile 1"
 DEFAULT_REMOTE_DEBUG = "localhost:9222"
+DEBUG_USER_DATA_DIR = "/Users/shengh4/Library/Application Support/Google/Chrome-Debug"
 
 
 CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -85,18 +86,44 @@ def _kill_chrome():
     logging.info("Chrome force-killed successfully.")
 
 
+def _setup_debug_profile(real_user_data_dir, profile_dir):
+    """Create a debug user-data-dir that symlinks the real profile."""
+    debug_dir = DEBUG_USER_DATA_DIR
+    os.makedirs(debug_dir, exist_ok=True)
+
+    for fname in ["Local State"]:
+        src = os.path.join(real_user_data_dir, fname)
+        dst = os.path.join(debug_dir, fname)
+        if os.path.isfile(src) and not os.path.exists(dst):
+            import shutil
+            shutil.copy2(src, dst)
+
+    if profile_dir:
+        link_path = os.path.join(debug_dir, profile_dir)
+        real_profile = os.path.join(real_user_data_dir, profile_dir)
+        if os.path.isdir(real_profile) and not os.path.exists(link_path):
+            os.symlink(real_profile, link_path)
+            logging.info("Symlinked %s -> %s", link_path, real_profile)
+
+    return debug_dir
+
+
 def _launch_chrome_debug(port, user_data_dir=None, profile_dir=None):
     """Launch Chrome with --remote-debugging-port and wait for it to be ready.
     If Chrome is already running without the debug port, it will be quit first."""
     import subprocess as sp
     _kill_chrome()
 
+    if user_data_dir:
+        debug_data_dir = _setup_debug_profile(user_data_dir, profile_dir)
+    else:
+        debug_data_dir = DEBUG_USER_DATA_DIR
+
     cmd = [CHROME_BINARY,
            f"--remote-debugging-port={port}",
+           f"--user-data-dir={debug_data_dir}",
            "--no-first-run",
            "--no-default-browser-check"]
-    if user_data_dir:
-        cmd.append(f"--user-data-dir={user_data_dir}")
     if profile_dir:
         cmd.append(f"--profile-directory={profile_dir}")
 
