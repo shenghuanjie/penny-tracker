@@ -161,22 +161,22 @@ def _launch_chrome_debug(port, user_data_dir=None, profile_dir=None):
 def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
     """Create a browser driver.
 
+    Priority: remote_debug → UC with profile (default) → bare UC.
+
     Args:
         chrome_profile: Path to Chrome user-data-dir (your real Chrome profile).
                         Chrome must be fully closed when using this.
         profile_dir:    Profile directory name inside user-data-dir (e.g. "Default",
-                        "Profile 1"). Only used with --chrome-profile.
+                        "Profile 1"). Only used with chrome_profile.
         remote_debug:   Connect to an already-running Chrome via debugging port
                         (e.g. "localhost:9222"). Launch Chrome yourself with
                         --remote-debugging-port=9222 first.
     """
-    service = ChromeService(ChromeDriverManager().install())
-
     # --- Remote debugging: attach to existing Chrome ---
     if remote_debug:
+        service = ChromeService(ChromeDriverManager().install())
         host, port = remote_debug.split(":")
         port = int(port)
-        # Auto-launch Chrome if debug port isn't reachable
         if not _is_port_open(host, port):
             _launch_chrome_debug(port, chrome_profile, profile_dir)
         logging.info("Connecting to Chrome at %s via remote debugging", remote_debug)
@@ -187,36 +187,27 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
         driver.set_page_load_timeout(60)
         return driver
 
-    # --- Chrome profile: use your real browser profile ---
-    if chrome_profile:
-        logging.info("Launching Chrome with profile: %s", chrome_profile)
-        options = webdriver.ChromeOptions()
-        options.add_argument(f"--user-data-dir={chrome_profile}")
-        if profile_dir:
-            options.add_argument(f"--profile-directory={profile_dir}")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--window-size=1920,1080")
-        options.page_load_strategy = 'eager'
-        prefs = {
-            "profile.default_content_setting_values.popups": 1,
-            "profile.default_content_setting_values.notifications": 2,
-        }
-        options.add_experimental_option("prefs", prefs)
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(60)
-        return driver
-
-    # --- Default: undetected_chromedriver ---
-    logging.info("Launching undetected Chrome")
+    # --- Default: undetected_chromedriver (with profile if provided) ---
     options = uc.ChromeOptions()
     options.add_argument("--disable-popup-blocking")
     options.page_load_strategy = 'eager'
+    options.add_argument("--window-size=1920,1080")
     prefs = {
         "profile.default_content_setting_values.popups": 1,
         "profile.default_content_setting_values.notifications": 2,
     }
     options.add_experimental_option("prefs", prefs)
-    options.add_argument("--window-size=1920,1080")
+
+    if chrome_profile:
+        logging.info("Launching undetected Chrome with profile: %s/%s",
+                     chrome_profile, profile_dir or "Default")
+        _kill_chrome()
+        options.add_argument(f"--user-data-dir={chrome_profile}")
+        if profile_dir:
+            options.add_argument(f"--profile-directory={profile_dir}")
+    else:
+        logging.info("Launching undetected Chrome (no profile)")
+
     driver = uc.Chrome(options=options, version_main=138)
     driver.set_page_load_timeout(60)
     return driver
@@ -718,25 +709,21 @@ def main():
                         help="Output directory")
     parser.add_argument("--chrome-profile", type=str, default=DEFAULT_CHROME_PROFILE,
                         help="Path to Chrome user-data-dir (default: %(default)s). "
-                             "Chrome must be fully closed. Use --no-chrome-profile to use undetected_chromedriver.")
+                             "Chrome will be closed and relaunched via undetected_chromedriver. "
+                             "Use --no-chrome-profile for a fresh UC session.")
     parser.add_argument("--profile-dir", type=str, default=DEFAULT_PROFILE_DIR,
                         help="Profile directory name inside user-data-dir (default: %(default)s).")
     parser.add_argument("--no-chrome-profile", action="store_true",
-                        help="Ignore --chrome-profile and use undetected_chromedriver instead.")
-    parser.add_argument("--remote-debug", type=str, default=DEFAULT_REMOTE_DEBUG,
-                        help="Connect to running Chrome via remote debugging (default: %(default)s). "
-                             "Launch Chrome with --remote-debugging-port=9222 first. "
-                             "Use --no-remote-debug to disable.")
-    parser.add_argument("--no-remote-debug", action="store_true",
-                        help="Don't use remote debugging, fall back to --chrome-profile or undetected_chromedriver.")
+                        help="Don't use a Chrome profile — launch a fresh undetected_chromedriver.")
+    parser.add_argument("--remote-debug", type=str, default=None,
+                        help="Connect to running Chrome via remote debugging (e.g. 'localhost:9222'). "
+                             "Overrides --chrome-profile. Launch Chrome with --remote-debugging-port=9222 first.")
     parser.add_argument("-m", "--mode", choices=["scrape", "report"],
                         default="scrape",
                         help="scrape: scrape FB group; report: generate HTML only")
     args = parser.parse_args()
 
-    # Handle opt-out flags
-    if args.no_remote_debug:
-        args.remote_debug = None
+    # Handle opt-out flag
     if args.no_chrome_profile:
         args.chrome_profile = None
         args.profile_dir = None
