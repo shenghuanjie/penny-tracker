@@ -43,25 +43,62 @@ def _is_port_open(host, port):
         return False
 
 
-def _launch_chrome_debug(port, user_data_dir=None, profile_dir=None):
-    """Launch Chrome with --remote-debugging-port and wait for it to be ready."""
+def _is_chrome_running():
+    """Check if any Chrome process is already running (macOS/Linux)."""
     import subprocess
+    try:
+        result = subprocess.run(["pgrep", "-f", "Google Chrome"], capture_output=True)
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def _launch_chrome_debug(port, user_data_dir=None, profile_dir=None):
+    """Launch Chrome with --remote-debugging-port and wait for it to be ready.
+    If Chrome is already running without the debug port, it will be quit first."""
+    import subprocess
+
+    # If Chrome is running but not on the debug port, quit it first
+    if _is_chrome_running():
+        logging.warning("Chrome is running but not on debug port %d. "
+                        "Attempting to quit Chrome first...", port)
+        try:
+            subprocess.run(["osascript", "-e",
+                            'tell application "Google Chrome" to quit'],
+                           timeout=10, capture_output=True)
+            for _ in range(20):
+                time.sleep(0.5)
+                if not _is_chrome_running():
+                    break
+            else:
+                logging.warning("Chrome didn't quit gracefully, continuing anyway...")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            subprocess.run(["pkill", "-f", "Google Chrome"], capture_output=True)
+            time.sleep(2)
+
     cmd = [CHROME_BINARY, f"--remote-debugging-port={port}"]
     if user_data_dir:
         cmd.append(f"--user-data-dir={user_data_dir}")
     if profile_dir:
         cmd.append(f"--profile-directory={profile_dir}")
 
-    logging.info("Auto-launching Chrome: %s", " ".join(cmd))
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    logging.info("Launching Chrome: %s", " ".join(cmd))
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
-    # Wait up to 15s for Chrome to start listening
-    for _ in range(30):
+    # Wait up to 30s for Chrome to start listening
+    for i in range(60):
         time.sleep(0.5)
         if _is_port_open("localhost", port):
             logging.info("Chrome is ready on port %d", port)
             return
-    raise RuntimeError(f"Chrome did not start on port {port} within 15 seconds")
+        if proc.poll() is not None:
+            stderr = proc.stderr.read().decode(errors="replace")
+            raise RuntimeError(
+                f"Chrome exited with code {proc.returncode}. stderr:\n{stderr}")
+
+    raise RuntimeError(
+        f"Chrome did not start on port {port} within 30 seconds. "
+        f"Try quitting Chrome (Cmd+Q) and running the script again.")
 
 
 # ── Driver ─────────────────────────────────────────────────────────────
