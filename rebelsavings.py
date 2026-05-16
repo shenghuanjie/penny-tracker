@@ -126,6 +126,29 @@ def close_modal(driver):
                 pass
 
 
+def is_chrome_alive(driver):
+    """Check if Chrome still has network connectivity."""
+    try:
+        # Try a lightweight navigation to check connectivity
+        driver.execute_script("return navigator.onLine;")
+        return True
+    except Exception:
+        return False
+
+
+def restart_driver(driver, chrome_profile=None, profile_dir=None,
+                   remote_debug=None):
+    """Quit the current driver and create a new one."""
+    logging.warning("Restarting Chrome driver...")
+    try:
+        driver.quit()
+    except Exception:
+        pass
+    time.sleep(3)
+    return get_driver(chrome_profile=chrome_profile, profile_dir=profile_dir,
+                      remote_debug=remote_debug)
+
+
 class RunningMode:
     # clean up TSV by removing old entries
     CLEAN = 'clean'
@@ -1496,9 +1519,13 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
     return items_collected
 
 
-def check_hd_status_phase(driver, deal_list, tsv_output_path):
+def check_hd_status_phase(driver, deal_list, tsv_output_path,
+                          chrome_profile=None, profile_dir=None,
+                          remote_debug=None, zip_code=DEFAULT_ZIP,
+                          hd_login=False):
     """Phase 2: Check HD status for unchecked items, oldest first.
-    Skips items that are already PENNY, OUT_OF_STOCK, or recently checked."""
+    Skips items that are already PENNY, OUT_OF_STOCK, or recently checked.
+    Auto-restarts Chrome if connectivity is lost."""
     # Find items that need HD checking
     to_check = []
     for i, deal in enumerate(deal_list):
@@ -1532,12 +1559,27 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path):
     consecutive_blocks = 0
     max_consecutive_blocks = 3
     checked = 0
+    restart_count = 0
+    max_restarts = 3
 
     for idx, deal in to_check:
         name = deal['name']
         hd_url = deal['url']
         print(f"\n[{checked + 1}/{len(to_check)}] {name[:60]}")
         print(f"   URL: {hd_url}")
+
+        # Check if Chrome is still alive; restart if needed
+        if not is_chrome_alive(driver):
+            if restart_count >= max_restarts:
+                print("Max driver restarts reached. Stopping HD checks.")
+                break
+            restart_count += 1
+            print(f"   Chrome lost connectivity. Restarting ({restart_count}/{max_restarts})...")
+            driver = restart_driver(driver, chrome_profile=chrome_profile,
+                                    profile_dir=profile_dir,
+                                    remote_debug=remote_debug)
+            warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
+            main_window = driver.current_window_handle
 
         if len(driver.window_handles) < 2:
             driver.execute_script("window.open('');")
@@ -1566,7 +1608,22 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path):
         print(f"   → {hd_status.upper()}")
 
         # Handle blocks
-        if hd_status in (HDStatus.BLOCKED, HDStatus.FAILURE):
+        if hd_status in (HDStatus.BLOCKED, HDStatus.FAILURE, HDStatus.ERROR):
+            # Check if it's a connectivity issue vs a real block
+            if not is_chrome_alive(driver):
+                if restart_count >= max_restarts:
+                    print("Max driver restarts reached. Stopping HD checks.")
+                    break
+                restart_count += 1
+                print(f"   Chrome disconnected. Restarting ({restart_count}/{max_restarts})...")
+                driver = restart_driver(driver, chrome_profile=chrome_profile,
+                                        profile_dir=profile_dir,
+                                        remote_debug=remote_debug)
+                warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
+                main_window = driver.current_window_handle
+                consecutive_blocks = 0  # reset — it was a connectivity issue
+                continue  # retry this item
+
             consecutive_blocks += 1
             print(f"   !!! BLOCKED ({consecutive_blocks}/{max_consecutive_blocks})")
             if len(driver.window_handles) > 1:
@@ -1749,7 +1806,12 @@ def main():
                 print(f"Git push failed (non-fatal): {e}")
 
             # --- PHASE 2: Check HD status (oldest first) ---
-            check_hd_status_phase(driver, deal_list, tsv_output_path)
+            check_hd_status_phase(driver, deal_list, tsv_output_path,
+                                  chrome_profile=args.chrome_profile,
+                                  profile_dir=args.profile_dir,
+                                  remote_debug=args.remote_debug,
+                                  zip_code=args.zip,
+                                  hd_login=args.hd_login)
 
             # Git push after HD checks
             print("\n=== Pushing HD check results ===")
