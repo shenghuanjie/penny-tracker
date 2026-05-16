@@ -1778,65 +1778,62 @@ def main():
         seen_ids = set(deal['name'] for deal in deal_list)
         max_items = args.max_items if args.max_items is not None else float('inf')
 
-        # --- SETUP: HD login upfront (if --hd-login) so user can walk away ---
-        if args.hd_login or args.chrome_profile:
+        # --- SETUP: Launch HD driver upfront, warm up, login if needed ---
+        # This driver stays alive through Phase 1 and is reused for Phase 2.
+        hd_driver = get_driver(chrome_profile=args.chrome_profile,
+                               profile_dir=args.profile_dir,
+                               remote_debug=args.remote_debug)
+        try:
             print(f"\n{'='*60}")
             print("SETUP: Warming up HD session with your profile")
             print(f"{'='*60}")
-            setup_driver = get_driver(chrome_profile=args.chrome_profile,
-                                      profile_dir=args.profile_dir,
-                                      remote_debug=args.remote_debug)
+            warm_up_hd_session(hd_driver, zip_code=args.zip,
+                               hd_login=args.hd_login)
+            print("HD session ready. You can walk away now.\n")
+
+            # --- PHASE 1: Collect from RebelSavings (separate clean UC) ---
+            # HD driver stays open in background — no profile conflict.
+            rebel_driver = get_driver(chrome_profile=None, profile_dir=None,
+                                      remote_debug=None)
             try:
-                warm_up_hd_session(setup_driver, zip_code=args.zip,
-                                   hd_login=args.hd_login)
-                print("HD session ready. Cookies saved to profile.")
+                collect_rebel_items(rebel_driver, deal_list, seen_ids,
+                                    tsv_output_path,
+                                    zip_code=args.zip, max_items=max_items,
+                                    max_days=60)
             finally:
-                setup_driver.quit()
-                print("Setup driver closed.\n")
+                rebel_driver.quit()
+                print("Phase 1 driver closed.")
 
-        # --- PHASE 1: Collect from RebelSavings (clean UC, no profile) ---
-        driver = get_driver(chrome_profile=None, profile_dir=None,
-                            remote_debug=args.remote_debug)
-        try:
-            collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
-                                zip_code=args.zip, max_items=max_items,
-                                max_days=60)
-        finally:
-            driver.quit()
-            print("Phase 1 driver closed.")
+            # Git push after collection
+            print("\n=== Pushing collected data ===")
+            generate_html_report(deal_list, report_path)
+            try:
+                subprocess.run(["git", "add", "-A"],
+                               cwd=args.output_dir, check=True)
+                subprocess.run(["git", "commit", "-m",
+                                "update data (collection)"],
+                               cwd=args.output_dir, check=True)
+                subprocess.run(
+                    ["git", "push"], cwd=args.output_dir,
+                    env={**os.environ,
+                         "GIT_SSH_COMMAND":
+                             "ssh -i ~/.ssh/id_rsa_public_github"
+                             " -o IdentitiesOnly=yes"},
+                    check=True)
+                print("Collection data pushed.")
+            except subprocess.CalledProcessError as e:
+                print(f"Git push failed (non-fatal): {e}")
 
-        # Git push after collection
-        print("\n=== Pushing collected data ===")
-        generate_html_report(deal_list, report_path)
-        try:
-            subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
-            subprocess.run(["git", "commit", "-m", "update data (collection)"],
-                           cwd=args.output_dir, check=True)
-            subprocess.run(
-                ["git", "push"], cwd=args.output_dir,
-                env={**os.environ,
-                     "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github"
-                                       " -o IdentitiesOnly=yes"},
-                check=True)
-            print("Collection data pushed.")
-        except subprocess.CalledProcessError as e:
-            print(f"Git push failed (non-fatal): {e}")
-
-        # --- PHASE 2: HD checks (UC with profile — already logged in) ---
-        driver = get_driver(chrome_profile=args.chrome_profile,
-                            profile_dir=args.profile_dir,
-                            remote_debug=args.remote_debug)
-        try:
-            warm_up_hd_session(driver, zip_code=args.zip, hd_login=False)
-            check_hd_status_phase(driver, deal_list, tsv_output_path,
+            # --- PHASE 2: HD checks (reuse the HD driver) ---
+            check_hd_status_phase(hd_driver, deal_list, tsv_output_path,
                                   chrome_profile=args.chrome_profile,
                                   profile_dir=args.profile_dir,
                                   remote_debug=args.remote_debug,
                                   zip_code=args.zip,
                                   hd_login=False)
         finally:
-            driver.quit()
-            print("Phase 2 driver closed.")
+            hd_driver.quit()
+            print("HD driver closed.")
 
         # Git push after HD checks
         print("\n=== Pushing HD check results ===")
