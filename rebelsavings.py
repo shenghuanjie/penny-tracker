@@ -1347,38 +1347,39 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                         max_days=60):
     """Phase 1: Scroll RebelSavings and collect items. No HD checks.
     Opens each modal to get HD URL + stock status, then closes it.
-    Returns the number of new items collected."""
+    Uses a clean UC session (no profile) to avoid Cloudflare issues."""
     rebel_url = REBEL_SAVINGS_DEAL_URL.format(zip=zip_code)
+    def _load_rebel_page(drv):
+        """Navigate to RebelSavings, sort, and enable OOS filter."""
+        print(f"Navigating to: {rebel_url}")
+        try:
+            drv.get(rebel_url)
+        except Exception as e:
+            print(f"Page load warning (may be OK): {e}")
+        WebDriverWait(drv, 30).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
+        print("Deal page loaded successfully.")
+        drv.execute_script("document.body.style.zoom='75%'")
+        try:
+            sort_link = WebDriverWait(drv, 10).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, "//a[contains(text(), 'Newest')]"
+                               " | //button[contains(text(), 'Newest')]"
+                               " | //th[contains(text(), 'Added')]")))
+            drv.execute_script("arguments[0].click();", sort_link)
+            time.sleep(random.uniform(2, 4))
+            WebDriverWait(drv, 15).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
+            print("Sorted by Added (newest first).")
+        except Exception as e:
+            print(f"Could not sort by Added (non-fatal): {e}")
+        toggle_oos_filter(drv, enable=True)
+
     print(f"\n{'='*60}")
     print(f"PHASE 1: Collecting items from RebelSavings (up to {max_days} days)")
     print(f"{'='*60}")
-    print(f"Navigating to: {rebel_url}")
-    try:
-        driver.get(rebel_url)
-    except Exception as e:
-        print(f"Page load warning (may be OK): {e}")
 
-    WebDriverWait(driver, 30).until(
-        EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
-    print("Deal page loaded successfully.")
-    driver.execute_script("document.body.style.zoom='75%'")
-
-    # Sort by Added (newest first)
-    try:
-        sort_link = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable(
-                (By.XPATH, "//a[contains(text(), 'Newest')]"
-                           " | //button[contains(text(), 'Newest')]"
-                           " | //th[contains(text(), 'Added')]")))
-        driver.execute_script("arguments[0].click();", sort_link)
-        time.sleep(random.uniform(2, 4))
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
-        print("Sorted by Added (newest first).")
-    except Exception as e:
-        print(f"Could not sort by Added (non-fatal): {e}")
-
-    toggle_oos_filter(driver, enable=True)
+    _load_rebel_page(driver)
 
     open_mode = 'a+' if os.path.isfile(tsv_output_path) else 'w+'
     items_collected = 0
@@ -1774,65 +1775,85 @@ def main():
 
     # --- SEARCH AND CHECK (TWO-PHASE) ---
     if args.mode in [RunningMode.SEARCH, RunningMode.ALL]:
+        seen_ids = set(deal['name'] for deal in deal_list)
+        max_items = args.max_items if args.max_items is not None else float('inf')
+
+        # --- SETUP: HD login upfront (if --hd-login) so user can walk away ---
+        if args.hd_login or args.chrome_profile:
+            print(f"\n{'='*60}")
+            print("SETUP: Warming up HD session with your profile")
+            print(f"{'='*60}")
+            setup_driver = get_driver(chrome_profile=args.chrome_profile,
+                                      profile_dir=args.profile_dir,
+                                      remote_debug=args.remote_debug)
+            try:
+                warm_up_hd_session(setup_driver, zip_code=args.zip,
+                                   hd_login=args.hd_login)
+                print("HD session ready. Cookies saved to profile.")
+            finally:
+                setup_driver.quit()
+                print("Setup driver closed.\n")
+
+        # --- PHASE 1: Collect from RebelSavings (clean UC, no profile) ---
+        driver = get_driver(chrome_profile=None, profile_dir=None,
+                            remote_debug=args.remote_debug)
+        try:
+            collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
+                                zip_code=args.zip, max_items=max_items,
+                                max_days=60)
+        finally:
+            driver.quit()
+            print("Phase 1 driver closed.")
+
+        # Git push after collection
+        print("\n=== Pushing collected data ===")
+        generate_html_report(deal_list, report_path)
+        try:
+            subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
+            subprocess.run(["git", "commit", "-m", "update data (collection)"],
+                           cwd=args.output_dir, check=True)
+            subprocess.run(
+                ["git", "push"], cwd=args.output_dir,
+                env={**os.environ,
+                     "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github"
+                                       " -o IdentitiesOnly=yes"},
+                check=True)
+            print("Collection data pushed.")
+        except subprocess.CalledProcessError as e:
+            print(f"Git push failed (non-fatal): {e}")
+
+        # --- PHASE 2: HD checks (UC with profile — already logged in) ---
         driver = get_driver(chrome_profile=args.chrome_profile,
                             profile_dir=args.profile_dir,
                             remote_debug=args.remote_debug)
         try:
-            seen_ids = set(deal['name'] for deal in deal_list)
-            max_items = args.max_items if args.max_items is not None else float('inf')
-
-            warm_up_hd_session(driver, zip_code=args.zip, hd_login=args.hd_login)
-
-            # --- PHASE 1: Collect items from RebelSavings (no HD checks) ---
-            collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
-                                zip_code=args.zip, max_items=max_items,
-                                max_days=60)
-
-            # Git push after collection
-            print("\n=== Pushing collected data ===")
-            generate_html_report(deal_list, report_path)
-            try:
-                subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
-                subprocess.run(["git", "commit", "-m", "update data (collection)"],
-                               cwd=args.output_dir, check=True)
-                subprocess.run(
-                    ["git", "push"], cwd=args.output_dir,
-                    env={**os.environ,
-                         "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github"
-                                           " -o IdentitiesOnly=yes"},
-                    check=True)
-                print("Collection data pushed.")
-            except subprocess.CalledProcessError as e:
-                print(f"Git push failed (non-fatal): {e}")
-
-            # --- PHASE 2: Check HD status (oldest first) ---
+            warm_up_hd_session(driver, zip_code=args.zip, hd_login=False)
             check_hd_status_phase(driver, deal_list, tsv_output_path,
                                   chrome_profile=args.chrome_profile,
                                   profile_dir=args.profile_dir,
                                   remote_debug=args.remote_debug,
                                   zip_code=args.zip,
-                                  hd_login=args.hd_login)
-
-            # Git push after HD checks
-            print("\n=== Pushing HD check results ===")
-            generate_html_report(deal_list, report_path)
-            try:
-                subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
-                subprocess.run(["git", "commit", "-m", "update data (HD checks)"],
-                               cwd=args.output_dir, check=True)
-                subprocess.run(
-                    ["git", "push"], cwd=args.output_dir,
-                    env={**os.environ,
-                         "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github"
-                                           " -o IdentitiesOnly=yes"},
-                    check=True)
-                print("HD check data pushed.")
-            except subprocess.CalledProcessError as e:
-                print(f"Git push failed (non-fatal): {e}")
-
+                                  hd_login=False)
         finally:
             driver.quit()
-            print("Scraping & Verification complete")
+            print("Phase 2 driver closed.")
+
+        # Git push after HD checks
+        print("\n=== Pushing HD check results ===")
+        generate_html_report(deal_list, report_path)
+        try:
+            subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
+            subprocess.run(["git", "commit", "-m", "update data (HD checks)"],
+                           cwd=args.output_dir, check=True)
+            subprocess.run(
+                ["git", "push"], cwd=args.output_dir,
+                env={**os.environ,
+                     "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github"
+                                       " -o IdentitiesOnly=yes"},
+                check=True)
+            print("HD check data pushed.")
+        except subprocess.CalledProcessError as e:
+            print(f"Git push failed (non-fatal): {e}")
 
     # --- REPORT ONLY MODE ---
     elif args.mode == RunningMode.REPORT:
