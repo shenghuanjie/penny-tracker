@@ -1319,6 +1319,287 @@ def toggle_oos_filter(driver, enable=True):
         return False
 
 
+def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
+                        zip_code=DEFAULT_ZIP, max_items=float('inf'),
+                        max_days=60):
+    """Phase 1: Scroll RebelSavings and collect items. No HD checks.
+    Opens each modal to get HD URL + stock status, then closes it.
+    Returns the number of new items collected."""
+    rebel_url = REBEL_SAVINGS_DEAL_URL.format(zip=zip_code)
+    print(f"\n{'='*60}")
+    print(f"PHASE 1: Collecting items from RebelSavings (up to {max_days} days)")
+    print(f"{'='*60}")
+    print(f"Navigating to: {rebel_url}")
+    try:
+        driver.get(rebel_url)
+    except Exception as e:
+        print(f"Page load warning (may be OK): {e}")
+
+    WebDriverWait(driver, 30).until(
+        EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
+    print("Deal page loaded successfully.")
+    driver.execute_script("document.body.style.zoom='75%'")
+
+    # Sort by Added (newest first)
+    try:
+        sort_link = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable(
+                (By.XPATH, "//a[contains(text(), 'Newest')]"
+                           " | //button[contains(text(), 'Newest')]"
+                           " | //th[contains(text(), 'Added')]")))
+        driver.execute_script("arguments[0].click();", sort_link)
+        time.sleep(random.uniform(2, 4))
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
+        print("Sorted by Added (newest first).")
+    except Exception as e:
+        print(f"Could not sort by Added (non-fatal): {e}")
+
+    toggle_oos_filter(driver, enable=True)
+
+    open_mode = 'a+' if os.path.isfile(tsv_output_path) else 'w+'
+    items_collected = 0
+    max_patience = 3
+    patience = 0
+    stop_scrolling = False
+
+    with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
+        if open_mode == "w+":
+            print(pad_row(FIELDNAMES), file=f_out)
+
+        while items_collected < max_items and not stop_scrolling:
+            current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
+            new_found = 0
+
+            for row in current_rows:
+                if items_collected >= max_items:
+                    break
+                try:
+                    # Check "Added" date
+                    tds = row.find_elements(By.TAG_NAME, "td")
+                    for td in tds:
+                        td_text = td.text.strip()
+                        try:
+                            added_date = datetime.datetime.strptime(
+                                td_text, "%b %d, %Y")
+                            days_ago = (datetime.datetime.now() - added_date).days
+                            if days_ago > max_days:
+                                print(f"\nItem added {days_ago} days ago "
+                                      f"({td_text}). Stopping scroll.")
+                                stop_scrolling = True
+                                break
+                        except ValueError:
+                            continue
+                    if stop_scrolling:
+                        break
+
+                    name_elem = row.find_element(By.CLASS_NAME, "title-column")
+                    name = name_elem.text.splitlines()[0].strip()
+                    if not name or name in seen_ids:
+                        continue
+
+                    price = row.find_element(By.XPATH, "./td[3]").text.strip()
+                    try:
+                        img_url = row.find_element(
+                            By.TAG_NAME, "img").get_attribute("src")
+                    except Exception:
+                        img_url = ""
+
+                    # Open modal to get HD URL and stock status
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block: 'center'});", row)
+                    time.sleep(random.uniform(0.3, 0.6))
+                    driver.execute_script("arguments[0].click();", row)
+
+                    try:
+                        wait_menu = WebDriverWait(driver, 5)
+                        wait_menu.until(EC.presence_of_element_located(
+                            (By.CLASS_NAME, "close-menu-btn")))
+                        hd_link_elem = wait_menu.until(
+                            EC.presence_of_element_located((
+                                By.XPATH,
+                                "//div[contains(@class, "
+                                "'detail-overlay-content')]//a")))
+                        hd_url = hd_link_elem.get_attribute("href")
+
+                        # Read stock status
+                        stock_elems = driver.find_elements(
+                            By.XPATH,
+                            "//div[contains(@class, 'detail-overlay-body')]"
+                            "//*[contains(@class, 'status-instock') or "
+                            "contains(@class, 'status-limited') or "
+                            "contains(@class, 'status-outofstock') or "
+                            "contains(@class, 'instock')]")
+                        in_stock = 0
+                        oos = 0
+                        for elem in stock_elems:
+                            cls = elem.get_attribute("class") or ""
+                            txt = elem.text.lower()
+                            if "outofstock" in cls or "out of stock" in txt:
+                                oos += 1
+                            elif ("instock" in cls or "limited" in cls
+                                  or "in stock" in txt or "left" in txt):
+                                in_stock += 1
+
+                        close_modal(driver)
+                        time.sleep(random.uniform(0.2, 0.4))
+                    except Exception:
+                        hd_url = ""
+                        in_stock = 0
+                        oos = 0
+                        close_modal(driver)
+
+                    # Determine initial status (no HD check yet)
+                    if in_stock == 0 and oos > 0:
+                        hd_status = HDStatus.OUT_OF_STOCK
+                    else:
+                        hd_status = ""  # unchecked
+
+                    now = datetime.datetime.fromtimestamp(
+                        time.time()).strftime(TIMESTAMP_FORMAT)
+                    current_deal = {
+                        "name": name, "price": price, "url": hd_url,
+                        "image": img_url, "original_timestamp": now,
+                        "hd_status": hd_status, "updated_at": now,
+                        "padding": ""
+                    }
+                    print(pad_row(current_deal), file=f_out)
+                    f_out.flush()
+
+                    deal_list.append(current_deal)
+                    seen_ids.add(name)
+                    items_collected += 1
+                    new_found += 1
+
+                    stock_str = f"({in_stock} in-stock, {oos} OOS)"
+                    status_str = hd_status.upper() if hd_status else "UNCHECKED"
+                    print(f"  [{items_collected}] {name[:55]} "
+                          f"{stock_str} → {status_str}")
+
+                except Exception as e:
+                    close_modal(driver)
+                    continue
+
+            if stop_scrolling:
+                break
+            if new_found > 0:
+                patience = 0
+            else:
+                patience += 1
+                if patience >= max_patience:
+                    print("Max patience reached. Stopping.")
+                    break
+            driver.execute_script("window.scrollBy(0, 800);")
+            time.sleep(random.uniform(2, 4))
+
+    print(f"\nPhase 1 complete: {items_collected} new items collected.")
+    return items_collected
+
+
+def check_hd_status_phase(driver, deal_list, tsv_output_path):
+    """Phase 2: Check HD status for unchecked items, oldest first.
+    Skips items that are already PENNY, OUT_OF_STOCK, or recently checked."""
+    # Find items that need HD checking
+    to_check = []
+    for i, deal in enumerate(deal_list):
+        status = deal.get('hd_status', '')
+        if status in (HDStatus.PENNY, HDStatus.OUT_OF_STOCK):
+            continue
+        url = deal.get('url', '')
+        if not url or 'homedepot.com' not in url:
+            continue
+        # Skip if checked within last day
+        updated = deal.get('updated_at', '')
+        if updated and status:
+            now_ts = datetime.datetime.fromtimestamp(
+                time.time()).strftime(TIMESTAMP_FORMAT)
+            if is_within_x_days(now_ts, updated, 1):
+                continue
+        to_check.append((i, deal))
+
+    # Sort by original_timestamp ascending (oldest first)
+    to_check.sort(key=lambda x: x[1].get('original_timestamp', ''))
+
+    print(f"\n{'='*60}")
+    print(f"PHASE 2: Checking {len(to_check)} items on Home Depot (oldest first)")
+    print(f"{'='*60}")
+
+    if not to_check:
+        print("No items to check.")
+        return
+
+    main_window = driver.current_window_handle
+    consecutive_blocks = 0
+    max_consecutive_blocks = 3
+    checked = 0
+
+    for idx, deal in to_check:
+        name = deal['name']
+        hd_url = deal['url']
+        print(f"\n[{checked + 1}/{len(to_check)}] {name[:60]}")
+        print(f"   URL: {hd_url}")
+
+        if len(driver.window_handles) < 2:
+            driver.execute_script("window.open('');")
+        driver.switch_to.window(driver.window_handles[-1])
+
+        hd_status = HDStatus.ERROR
+        try:
+            nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
+            if nav_ok:
+                time.sleep(random.uniform(2, 4))
+                hd_status = check_hd_item_tab_status(driver, name=name)
+            else:
+                hd_status = HDStatus.FAILURE
+        except Exception as e:
+            print(f"   Error checking HD: {e}")
+            hd_status = HDStatus.ERROR
+
+        driver.switch_to.window(main_window)
+        checked += 1
+
+        # Update deal in memory
+        now = datetime.datetime.fromtimestamp(
+            time.time()).strftime(TIMESTAMP_FORMAT)
+        deal_list[idx]['hd_status'] = hd_status
+        deal_list[idx]['updated_at'] = now
+        print(f"   → {hd_status.upper()}")
+
+        # Handle blocks
+        if hd_status in (HDStatus.BLOCKED, HDStatus.FAILURE):
+            consecutive_blocks += 1
+            print(f"   !!! BLOCKED ({consecutive_blocks}/{max_consecutive_blocks})")
+            if len(driver.window_handles) > 1:
+                driver.switch_to.window(driver.window_handles[-1])
+                clear_hd_cookies(driver)
+                driver.switch_to.window(main_window)
+            if consecutive_blocks >= max_consecutive_blocks:
+                print(f"   !!! {max_consecutive_blocks} consecutive blocks. "
+                      "Stopping HD checks.")
+                break
+        else:
+            consecutive_blocks = 0
+            if len(driver.window_handles) > 1:
+                driver.switch_to.window(driver.window_handles[-1])
+                browse_hd_homepage(driver)
+                driver.switch_to.window(main_window)
+
+        # Pacing between HD checks
+        if hd_status not in (HDStatus.OUT_OF_STOCK,
+                             HDStatus.BLOCKED, HDStatus.FAILURE):
+            delay = random.uniform(60, 120)
+            print(f"   Waiting {delay:.0f}s before next HD check...")
+            time.sleep(delay)
+
+    # Rewrite TSV with updated statuses
+    with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
+        print(pad_row(FIELDNAMES), file=f_out)
+        for deal in deal_list:
+            print(pad_row(deal), file=f_out)
+
+    print(f"\nPhase 2 complete: {checked} items checked on HD.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="RebelSavings Scraper & Reporter")
     parser.add_argument("-n", "--max-items", type=int, default=None,
@@ -1434,7 +1715,7 @@ def main():
                 for deal_row in new_deal_list:
                     print(pad_row(deal_row), file=fp)
 
-    # --- SEARCH AND CHECK (MERGED) ---
+    # --- SEARCH AND CHECK (TWO-PHASE) ---
     if args.mode in [RunningMode.SEARCH, RunningMode.ALL]:
         driver = get_driver(chrome_profile=args.chrome_profile,
                             profile_dir=args.profile_dir,
@@ -1443,330 +1724,53 @@ def main():
             seen_ids = set(deal['name'] for deal in deal_list)
             max_items = args.max_items if args.max_items is not None else float('inf')
 
-            print(f"Starting item collection & verification (Max: {max_items})...")
-
-            # Warm up HD session first to build Akamai trust
             warm_up_hd_session(driver, zip_code=args.zip, hd_login=args.hd_login)
 
-            rebel_url = REBEL_SAVINGS_DEAL_URL.format(zip=args.zip)
-            print(f"Navigating to: {rebel_url}")
-            try:
-                driver.get(rebel_url)
-            except Exception as e:
-                # Page load timeout is OK with eager strategy — DOM may already be ready
-                print(f"Page load warning (may be OK): {e}")
-            # Wait for the React app to load and render deal rows
-            WebDriverWait(driver, 30).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
-            print("Deal page loaded successfully.")
-            driver.execute_script("document.body.style.zoom='75%'")
+            # --- PHASE 1: Collect items from RebelSavings (no HD checks) ---
+            collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
+                                zip_code=args.zip, max_items=max_items,
+                                max_days=60)
 
-            main_window = driver.current_window_handle
-
-            # Sort by "Added" (newest first) so we can stop at 30 days
-            try:
-                # Look for the sort link/button for "Newest to Oldest"
-                sort_link = WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable(
-                        (By.XPATH, "//a[contains(text(), 'Newest')]"
-                                   " | //button[contains(text(), 'Newest')]"
-                                   " | //th[contains(text(), 'Added')]")))
-                driver.execute_script("arguments[0].click();", sort_link)
-                time.sleep(random.uniform(2, 4))
-                # Wait for table to refresh
-                WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "summary-row")))
-                print("Sorted by Added (newest first).")
-            except Exception as e:
-                print(f"Could not sort by Added (non-fatal): {e}")
-
-            # Enable "Show Out of Stock" so we can see stock status per store
-            toggle_oos_filter(driver, enable=True)
-
-            # Open TSV for writing
-            open_mode = 'a+' if os.path.isfile(tsv_output_path) else 'w+'
-            with open(tsv_output_path, open_mode, encoding="utf-8") as f_out:
-                if open_mode == "w+":
-                    print(pad_row(FIELDNAMES), file=f_out)
-
-                consecutive_blocks = 0
-                max_consecutive_blocks = 3
-                hd_blocked_out = False  # True = stop HD checks, keep collecting
-                max_patience = 3
-                patience = 0
-                items_processed = 0
-                hd_checks_done = 0
-
-                stop_scrolling = False
-
-                while items_processed < max_items and not stop_scrolling:
-                    current_rows = driver.find_elements(By.CLASS_NAME, "summary-row")
-                    new_found = 0
-
-                    for row in current_rows:
-                        if items_processed >= max_items:
-                            break
-
-                        try:
-                            # Check "Added" date — stop if older than 30 days
-                            tds = row.find_elements(By.TAG_NAME, "td")
-                            for td in tds:
-                                td_text = td.text.strip()
-                                try:
-                                    added_date = datetime.datetime.strptime(
-                                        td_text, "%b %d, %Y")
-                                    days_ago = (datetime.datetime.now() - added_date).days
-                                    if days_ago > 30:
-                                        print(f"\nItem added {days_ago} days ago "
-                                              f"({td_text}). Stopping scroll.")
-                                        stop_scrolling = True
-                                        break
-                                except ValueError:
-                                    continue
-                            if stop_scrolling:
-                                break
-
-                            name_elem = row.find_element(By.CLASS_NAME, "title-column")
-                            name = name_elem.text.splitlines()[0].strip()
-                            if not name:
-                                continue
-
-                            # Skip duplicates that are penny or recently updated
-                            duplicated_item = name in seen_ids
-                            if duplicated_item:
-                                f_out.seek(0)
-                                content = f_out.read()
-                                match_index = content.find(name)
-                                if match_index != -1:
-                                    line_start = content.rfind("\n", 0, match_index) + 1
-                                    f_out.seek(line_start)
-                                    data = f_out.readline()
-                                    parts = data.strip().split("\t")
-                                    while len(parts) < len(FIELDNAMES):
-                                        parts.append("")
-                                    existing_status = parts[FIELDNAMES.index('hd_status')]
-                                    if existing_status == HDStatus.PENNY:
-                                        continue
-                                    update_ts = parts[FIELDNAMES.index('updated_at')]
-                                    now_ts = datetime.datetime.fromtimestamp(
-                                        time.time()).strftime(TIMESTAMP_FORMAT)
-                                    if is_within_x_days(now_ts, update_ts, 1):
-                                        continue
-                                f_out.seek(0, 2)
-
-                            price = row.find_element(By.XPATH, "./td[3]").text.strip()
-                            try:
-                                img_url = row.find_element(By.TAG_NAME, "img").get_attribute("src")
-                            except Exception:
-                                img_url = ""
-
-                            # Click row to open modal
-                            driver.execute_script(
-                                "arguments[0].scrollIntoView({block: 'center'});", row)
-                            time.sleep(random.uniform(0.5, 1.0))
-                            driver.execute_script("arguments[0].click();", row)
-
-                            wait_menu = WebDriverWait(driver, 5)
-                            wait_menu.until(
-                                EC.presence_of_element_located((By.CLASS_NAME, "close-menu-btn")))
-
-                            # Get HD URL from modal
-                            hd_link_elem = wait_menu.until(EC.presence_of_element_located(
-                                (By.XPATH,
-                                 "//div[contains(@class, 'detail-overlay-content')]//a")))
-                            hd_url = hd_link_elem.get_attribute("href")
-
-                            # Check stock status from modal store rows
-                            stock_elems = driver.find_elements(
-                                By.XPATH,
-                                "//div[contains(@class, 'detail-overlay-body')]"
-                                "//*[contains(@class, 'status-instock') or "
-                                "contains(@class, 'status-limited') or "
-                                "contains(@class, 'status-outofstock') or "
-                                "contains(@class, 'instock')]")
-
-                            in_stock_count = 0
-                            oos_count = 0
-                            for elem in stock_elems:
-                                cls = elem.get_attribute("class") or ""
-                                txt = elem.text.lower()
-                                if "outofstock" in cls or "out of stock" in txt:
-                                    oos_count += 1
-                                elif ("instock" in cls or "limited" in cls
-                                      or "in stock" in txt or "left" in txt):
-                                    in_stock_count += 1
-
-                            # Close modal
-                            close_modal(driver)
-                            time.sleep(random.uniform(0.3, 0.6))
-
-                            print(f"\n[{items_processed + 1}] {name[:60]}")
-                            print(f"   Stock: {in_stock_count} in-stock, {oos_count} OOS")
-
-                            # Determine action based on stock
-                            if in_stock_count == 0 and oos_count > 0:
-                                # All rows out of stock → OUT_OF_STOCK, no HD check
-                                hd_status = HDStatus.OUT_OF_STOCK
-                                print(f"   → OUT_OF_STOCK (all stores OOS)")
-                            elif hd_blocked_out:
-                                # HD checks disabled due to consecutive blocks
-                                if oos_count > 0:
-                                    hd_status = HDStatus.BLOCKED
-                                else:
-                                    hd_status = HDStatus.FAILURE
-                                print(f"   → Skipping HD check (blocked out)")
-                            else:
-                                # Some or all in stock → check on HD
-                                print(f"   → Checking on HD... URL: {hd_url}")
-
-                                if len(driver.window_handles) < 2:
-                                    driver.execute_script("window.open('');")
-                                driver.switch_to.window(driver.window_handles[-1])
-
-                                hd_status = HDStatus.ERROR
-                                try:
-                                    nav_ok = navigate_to_hd_product(
-                                        driver, hd_url, name=name)
-                                    if nav_ok:
-                                        time.sleep(random.uniform(2, 4))
-                                        hd_status = check_hd_item_tab_status(
-                                            driver, name=name)
-                                    else:
-                                        if oos_count > 0:
-                                            hd_status = HDStatus.BLOCKED
-                                        else:
-                                            hd_status = HDStatus.FAILURE
-                                except Exception as e:
-                                    print(f"   Error checking HD: {e}")
-                                    hd_status = HDStatus.ERROR
-
-                                driver.switch_to.window(main_window)
-                                hd_checks_done += 1
-
-                                # Handle blocks and pacing
-                                if hd_status in (HDStatus.BLOCKED, HDStatus.FAILURE):
-                                    consecutive_blocks += 1
-                                    print(f"   !!! BLOCKED ({consecutive_blocks}/"
-                                          f"{max_consecutive_blocks})")
-                                    if len(driver.window_handles) > 1:
-                                        driver.switch_to.window(
-                                            driver.window_handles[-1])
-                                        clear_hd_cookies(driver)
-                                        driver.switch_to.window(main_window)
-                                    if consecutive_blocks >= max_consecutive_blocks:
-                                        hd_blocked_out = True
-                                        print(f"   !!! {max_consecutive_blocks} "
-                                              "consecutive blocks. Skipping HD "
-                                              "checks for remaining items.")
-                                else:
-                                    consecutive_blocks = 0
-                                    if len(driver.window_handles) > 1:
-                                        driver.switch_to.window(
-                                            driver.window_handles[-1])
-                                        browse_hd_homepage(driver)
-                                        driver.switch_to.window(main_window)
-
-                            # Save to TSV and deal_list
-                            now = datetime.datetime.fromtimestamp(
-                                time.time()).strftime(TIMESTAMP_FORMAT)
-                            current_deal = {
-                                "name": name,
-                                "price": price,
-                                "url": hd_url,
-                                "image": img_url,
-                                "original_timestamp": now,
-                                "hd_status": hd_status,
-                                "updated_at": now,
-                                "padding": ""
-                            }
-                            print(pad_row(current_deal), file=f_out)
-                            f_out.flush()
-                            f_out.seek(0, 2)
-
-                            if not duplicated_item:
-                                deal_list.append(current_deal)
-                                seen_ids.add(name)
-                            else:
-                                for d in deal_list:
-                                    if d['name'] == name:
-                                        d['hd_status'] = hd_status
-                                        d['updated_at'] = now
-                                        break
-
-                            items_processed += 1
-                            new_found += 1
-
-                            # Pacing only when we actually did an HD check
-                            if not hd_blocked_out and hd_status not in (
-                                    HDStatus.OUT_OF_STOCK,
-                                    HDStatus.BLOCKED, HDStatus.FAILURE):
-                                delay = random.uniform(60, 120)
-                                print(f"   Waiting {delay:.0f}s before next HD check...")
-                                time.sleep(delay)
-
-                        except Exception as e:
-                            close_modal(driver)
-                            if len(driver.window_handles) > 1:
-                                for handle in driver.window_handles:
-                                    if handle != main_window:
-                                        driver.switch_to.window(handle)
-                                        driver.close()
-                                driver.switch_to.window(main_window)
-                            print(f"Skipping row due to error: {e}")
-                            continue
-
-                    if stop_scrolling:
-                        break
-
-                    if new_found > 0:
-                        patience = 0
-                    else:
-                        patience += 1
-                        if patience >= max_patience:
-                            print("Max patience reached. Stopping.")
-                            break
-
-                    driver.execute_script("window.scrollBy(0, 800);")
-                    time.sleep(random.uniform(3, 5))
-
-            # Generate interim report and push
-            print("\n=== Generating report and pushing data ===")
+            # Git push after collection
+            print("\n=== Pushing collected data ===")
             generate_html_report(deal_list, report_path)
             try:
                 subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
-                subprocess.run(["git", "commit", "-m", "update data"],
+                subprocess.run(["git", "commit", "-m", "update data (collection)"],
                                cwd=args.output_dir, check=True)
                 subprocess.run(
-                    ["git", "push"],
-                    cwd=args.output_dir,
+                    ["git", "push"], cwd=args.output_dir,
                     env={**os.environ,
                          "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github"
                                            " -o IdentitiesOnly=yes"},
                     check=True)
-                print("Data committed and pushed.")
+                print("Collection data pushed.")
             except subprocess.CalledProcessError as e:
-                print(f"Git commit/push failed (non-fatal): {e}")
+                print(f"Git push failed (non-fatal): {e}")
+
+            # --- PHASE 2: Check HD status (oldest first) ---
+            check_hd_status_phase(driver, deal_list, tsv_output_path)
+
+            # Git push after HD checks
+            print("\n=== Pushing HD check results ===")
+            generate_html_report(deal_list, report_path)
+            try:
+                subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
+                subprocess.run(["git", "commit", "-m", "update data (HD checks)"],
+                               cwd=args.output_dir, check=True)
+                subprocess.run(
+                    ["git", "push"], cwd=args.output_dir,
+                    env={**os.environ,
+                         "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github"
+                                           " -o IdentitiesOnly=yes"},
+                    check=True)
+                print("HD check data pushed.")
+            except subprocess.CalledProcessError as e:
+                print(f"Git push failed (non-fatal): {e}")
 
         finally:
             driver.quit()
             print("Scraping & Verification complete")
-
-            # Generate final report and push
-            print('Saving HTML report...')
-            generate_html_report(deal_list, report_path)
-            try:
-                subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
-                subprocess.run(["git", "commit", "-m", "update data"],
-                               cwd=args.output_dir, check=True)
-                subprocess.run(
-                    ["git", "push"],
-                    cwd=args.output_dir,
-                    env={**os.environ,
-                         "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github -o IdentitiesOnly=yes"},
-                    check=True)
-                print("Final data committed and pushed.")
-            except subprocess.CalledProcessError as e:
-                print(f"Final git commit/push failed (non-fatal): {e}")
 
     # --- REPORT ONLY MODE ---
     elif args.mode == RunningMode.REPORT:
