@@ -1,6 +1,7 @@
 import datetime
 import logging
 import re
+import requests
 import shutil
 import subprocess
 import sys
@@ -411,6 +412,75 @@ def extract_sku_from_url(hd_url):
     if match:
         return match.group(1)
     return None
+
+
+def check_hd_price_api(sku, zip_code=DEFAULT_ZIP):
+    """Check HD product price via their public API. No browser needed.
+    Returns (price_float, status_string) or (None, None) on failure."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/138.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "x-experience-name": "general-merchandise",
+        "x-current-url": f"/p/product/{sku}",
+    }
+    # HD's product API endpoint
+    api_url = (f"https://www.homedepot.com/federation-gateway/graphql"
+               f"?opname=productClientOnlyProduct")
+    payload = {
+        "operationName": "productClientOnlyProduct",
+        "variables": {
+            "itemId": sku,
+            "storeId": "",
+            "zipCode": zip_code,
+        },
+        "query": """query productClientOnlyProduct($itemId: String!, $storeId: String!, $zipCode: String!) {
+            product(itemId: $itemId) {
+                identifiers { itemId productLabel }
+                pricing(storeId: $storeId) {
+                    value originalPrice specialPrice
+                    promotion { dollarOff percentageOff }
+                }
+                availabilityType { type discontinued }
+                info { globalCustomConfigurator { customExperience } }
+            }
+        }"""
+    }
+    try:
+        resp = requests.post(api_url, json=payload, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return None, None
+        data = resp.json()
+        product = data.get("data", {}).get("product")
+        if not product:
+            return None, None
+
+        pricing = product.get("pricing", {})
+        price = pricing.get("value") or pricing.get("specialPrice")
+        original = pricing.get("originalPrice")
+
+        avail = product.get("availabilityType", {})
+        discontinued = avail.get("discontinued", False)
+
+        if price is not None:
+            price = float(price)
+            if price <= 0.03:
+                return price, HDStatus.PENNY
+            elif price <= 1.00:
+                return price, HDStatus.PENNY_CANDIDATE
+            elif original and price < float(original) * 0.5:
+                return price, HDStatus.CLEARANCE
+            else:
+                return price, HDStatus.NOT_PENNY
+
+        if discontinued:
+            return None, HDStatus.OUT_OF_STOCK
+
+        return None, None
+    except Exception as e:
+        logging.debug("API price check failed for %s: %s", sku, e)
+        return None, None
 
 
 def navigate_hd_via_google(driver, hd_url, name=''):
@@ -1070,14 +1140,17 @@ def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP, hd_login=False):
 def pad_row(input_list, target_char_length=ROW_SIZE, pad_char=" "):
     target_char_length -= 1
     if isinstance(input_list, dict):
-        input_list = input_list.values()
+        # Ensure field order matches FIELDNAMES
+        input_list = [str(input_list.get(f, "")) for f in FIELDNAMES]
     tsv_string = "\t".join(str(item) for item in input_list)
     current_len = len(tsv_string)
 
     if current_len < target_char_length:
         return tsv_string.ljust(target_char_length, pad_char)
     elif current_len > target_char_length:
-        return tsv_string[:target_char_length]
+        # Don't truncate data fields — only trim the padding column
+        # This prevents rows from being corrupted
+        return tsv_string
     return tsv_string
 
 
@@ -1582,62 +1655,79 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
             warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
             main_window = driver.current_window_handle
 
-        if len(driver.window_handles) < 2:
-            driver.execute_script("window.open('');")
-        driver.switch_to.window(driver.window_handles[-1])
+        # --- Try API price check first (no browser needed) ---
+        sku = extract_sku_from_url(hd_url)
+        api_price, api_status = None, None
+        if sku:
+            api_price, api_status = check_hd_price_api(sku, zip_code=zip_code)
+            if api_status:
+                print(f"   API: ${api_price:.2f} → {api_status.upper()}"
+                      if api_price else f"   API: → {api_status.upper()}")
 
-        hd_status = HDStatus.ERROR
-        import threading
-        result_holder = [HDStatus.ERROR]
+        # If API gave a definitive answer, skip browser check
+        if api_status in (HDStatus.PENNY, HDStatus.NOT_PENNY,
+                          HDStatus.CLEARANCE, HDStatus.PENNY_CANDIDATE):
+            hd_status = api_status
+            checked += 1
+        else:
+            # --- Browser fallback ---
+            if len(driver.window_handles) < 2:
+                driver.execute_script("window.open('');")
+            driver.switch_to.window(driver.window_handles[-1])
 
-        def _do_hd_check():
-            try:
-                nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
-                if nav_ok:
-                    time.sleep(random.uniform(2, 4))
-                    result_holder[0] = check_hd_item_tab_status(driver, name=name)
-                else:
-                    result_holder[0] = HDStatus.FAILURE
-            except Exception as e:
-                print(f"   Error checking HD: {e}")
-                result_holder[0] = HDStatus.ERROR
+            hd_status = HDStatus.ERROR
+            import threading
+            result_holder = [HDStatus.ERROR]
 
-        hd_thread = threading.Thread(target=_do_hd_check, daemon=True)
-        hd_thread.start()
-        hd_thread.join(timeout=90)  # 90s max per item
+            def _do_hd_check():
+                try:
+                    nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
+                    if nav_ok:
+                        time.sleep(random.uniform(2, 4))
+                        result_holder[0] = check_hd_item_tab_status(
+                            driver, name=name)
+                    else:
+                        result_holder[0] = HDStatus.FAILURE
+                except Exception as e:
+                    print(f"   Error checking HD: {e}")
+                    result_holder[0] = HDStatus.ERROR
 
-        if hd_thread.is_alive():
-            print("   !!! HD check timed out (90s). Page hung.")
-            # Kill the hung tab and open a fresh one
-            try:
-                driver.switch_to.window(driver.window_handles[-1])
-                driver.close()
-            except Exception:
-                pass
+            hd_thread = threading.Thread(target=_do_hd_check, daemon=True)
+            hd_thread.start()
+            hd_thread.join(timeout=90)
+
+            if hd_thread.is_alive():
+                print("   !!! HD check timed out (90s). Page hung.")
+                try:
+                    driver.switch_to.window(driver.window_handles[-1])
+                    driver.close()
+                except Exception:
+                    pass
+                try:
+                    driver.switch_to.window(main_window)
+                except Exception:
+                    print("   !!! Driver unresponsive. Forcing restart...")
+                    if restart_count < max_restarts:
+                        restart_count += 1
+                        driver = restart_driver(
+                            driver, chrome_profile=chrome_profile,
+                            profile_dir=profile_dir,
+                            remote_debug=remote_debug)
+                        warm_up_hd_session(driver, zip_code=zip_code,
+                                           hd_login=hd_login)
+                        main_window = driver.current_window_handle
+                    else:
+                        print("Max restarts reached. Stopping.")
+                        break
+                hd_status = HDStatus.ERROR
+            else:
+                hd_status = result_holder[0]
+
             try:
                 driver.switch_to.window(main_window)
             except Exception:
-                # Driver itself may be hung — need restart
-                print("   !!! Driver unresponsive. Forcing restart...")
-                if restart_count < max_restarts:
-                    restart_count += 1
-                    driver = restart_driver(driver, chrome_profile=chrome_profile,
-                                            profile_dir=profile_dir,
-                                            remote_debug=remote_debug)
-                    warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
-                    main_window = driver.current_window_handle
-                else:
-                    print("Max restarts reached. Stopping.")
-                    break
-            hd_status = HDStatus.ERROR
-        else:
-            hd_status = result_holder[0]
-
-        try:
-            driver.switch_to.window(main_window)
-        except Exception:
-            pass
-        checked += 1
+                pass
+            checked += 1
 
         # Update deal in memory
         now = datetime.datetime.fromtimestamp(
@@ -1779,14 +1869,18 @@ def main():
                 f_out.readline()  # skip header
                 for row in f_out:
                     parts = row.strip().split("\t")
+                    # Strip padding whitespace from each field
+                    parts = [p.strip() for p in parts]
                     if len(parts) >= min_fields:
-                        # Pad parts to match FIELDNAMES length if padding was stripped
                         while len(parts) < len(FIELDNAMES):
                             parts.append("")
                         row_dict = dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)]))
-                        deal_list.append(row_dict)
+                        # Skip empty/header rows
+                        if row_dict.get("name") and row_dict["name"] != "name":
+                            deal_list.append(row_dict)
         except Exception as e:
             print(f"Error reading TSV: {e}")
+        print(f"Loaded {len(deal_list)} items from TSV.")
 
     # --- CLEANING OLD DATA ---
     if args.mode in [RunningMode.CLEAN] and deal_list:
@@ -1907,6 +2001,26 @@ def main():
                             remote_debug=args.remote_debug)
         warm_up_hd_session(driver, zip_code=args.zip, hd_login=args.hd_login)
         process_tracker_items(driver, deal_list, tsv_output_path)
+
+    # --- ALWAYS generate final report at end ---
+    print("\n=== Generating final report ===")
+    # Reload from TSV to pick up any changes from phases
+    if os.path.isfile(tsv_output_path):
+        deal_list = []
+        min_fields = len(FIELDNAMES) - 1
+        with open(tsv_output_path, "r", encoding="utf-8") as f:
+            f.readline()  # skip header
+            for row in f:
+                parts = row.strip().split("\t")
+                parts = [p.strip() for p in parts]
+                if len(parts) >= min_fields:
+                    while len(parts) < len(FIELDNAMES):
+                        parts.append("")
+                    row_dict = dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)]))
+                    if row_dict.get("name") and row_dict["name"] != "name":
+                        deal_list.append(row_dict)
+    generate_html_report(deal_list, report_path)
+    print(f"Report written to {report_path} ({len(deal_list)} items)")
 
 
 if __name__ == "__main__":
