@@ -12,7 +12,7 @@
 #   ./run.sh            # full pipeline
 #   ./run.sh --skip1    # skip phase 1, start from phase 2
 
-set -euo pipefail
+set -uo pipefail
 cd "$(dirname "$0")"
 
 SKIP_PHASE1=false
@@ -25,7 +25,7 @@ GIT_SSH="ssh -i ~/.ssh/id_rsa_public_github -o IdentitiesOnly=yes"
 push() {
     echo ""
     echo "=== Updating HTML report and pushing ==="
-    python rebelsavings.py -m report
+    python rebelsavings.py -m report || echo "Report generation failed (non-fatal)"
     git add -A
     git commit -m "update data $(date '+%Y-%m-%d %H:%M')" || true
     GIT_SSH_COMMAND="$GIT_SSH" git push || echo "Git push failed (non-fatal)"
@@ -38,13 +38,13 @@ echo "============================================================"
 # ── Step 1: Clean up TSV ──
 echo ""
 echo ">>> Cleaning up TSV (removing old/duplicate entries)"
-python rebelsavings.py -m clean
+python rebelsavings.py -m clean || echo "Clean failed (non-fatal)"
 
 # ── Step 2: Phase 1 — collect from RebelSavings ──
 if [[ "$SKIP_PHASE1" == false ]]; then
     echo ""
     echo ">>> Phase 1: Collecting from RebelSavings"
-    python rebelsavings.py --phase 1
+    python rebelsavings.py --phase 1 || echo "Phase 1 failed (non-fatal)"
     push
 else
     echo ""
@@ -54,7 +54,7 @@ fi
 # ── Step 3: Phase 2 — check HD prices ──
 echo ""
 echo ">>> Phase 2: Checking HD prices"
-python rebelsavings.py --phase 2 --recheck
+python rebelsavings.py --phase 2 --recheck || echo "Phase 2 failed (non-fatal)"
 push
 
 echo ""
