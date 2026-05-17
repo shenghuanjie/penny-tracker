@@ -46,6 +46,9 @@ if [[ "$SKIP_PHASE1" == false ]]; then
     echo ">>> Phase 1: Collecting from RebelSavings"
     python rebelsavings.py --phase 1 || echo "Phase 1 failed (non-fatal)"
     push
+    echo ""
+    echo ">>> Waiting 30s for GitHub Pages to refresh..."
+    sleep 30
 else
     echo ""
     echo ">>> Skipping Phase 1"
