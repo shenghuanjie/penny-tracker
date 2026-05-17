@@ -485,14 +485,45 @@ def check_hd_price_api(sku, zip_code=DEFAULT_ZIP):
         return None, None
 
 
-def navigate_hd_via_google(driver, hd_url, name=''):
-    """
-    Navigate to a Home Depot product page via Google search.
-    Searching on Google and clicking through gives a legitimate Referer
-    header and mimics real user behavior, which avoids Akamai bot detection.
+GITHUB_PAGES_URL = "https://shenghuanjie.github.io/penny-tracker/"
 
-    Falls back to HD on-site search, then direct URL as last resort.
-    """
+
+def navigate_hd_via_github_pages(driver, hd_url, name=''):
+    """Navigate to an HD product page by clicking its link on the GitHub
+    Pages report.  This gives a legitimate Referer from github.io."""
+    sku = extract_sku_from_url(hd_url)
+    if not sku:
+        return False
+
+    print(f"   > GitHub Pages click-through for SKU: {sku}")
+    try:
+        driver.get(GITHUB_PAGES_URL)
+        time.sleep(random.uniform(2, 4))
+
+        # Find the HD link that contains this SKU
+        wait = WebDriverWait(driver, 8)
+        xpath = f"//a[contains(@href, 'homedepot.com') and contains(@href, '{sku}')]"
+        try:
+            link = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});", link)
+            time.sleep(random.uniform(0.5, 1.5))
+            link.click()
+            time.sleep(random.uniform(4, 7))
+
+            if not is_hd_blocked(driver):
+                return True
+            else:
+                print(f"   > Blocked after GitHub Pages click-through")
+        except Exception:
+            print(f"   > SKU {sku} not found on GitHub Pages report")
+    except Exception as e:
+        print(f"   > GitHub Pages navigation failed: {e}")
+    return False
+
+
+def navigate_hd_via_google(driver, hd_url, name=''):
+    """Navigate to an HD product page via Google search click-through."""
     sku = extract_sku_from_url(hd_url)
     if not sku:
         print(f"   > Could not extract SKU from URL: {hd_url}")
@@ -501,20 +532,26 @@ def navigate_hd_via_google(driver, hd_url, name=''):
     print(f"   > Google search for HD SKU: {sku}")
 
     try:
-        # Search Google for the SKU on homedepot.com
         query = f"site:homedepot.com {sku}"
         driver.get(f"https://www.google.com/search?q={query}")
         time.sleep(random.uniform(3, 5))
 
+        # Check for CAPTCHA / robot detection
+        page_text = driver.page_source.lower()
+        if ("unusual traffic" in page_text or "captcha" in page_text
+                or "recaptcha" in page_text
+                or "sorry/index" in driver.current_url):
+            print(f"   > Google robot detection triggered, skipping")
+            return False
+
         wait = WebDriverWait(driver, 10)
 
-        # Look for a homedepot.com link in Google results
         try:
             hd_result = wait.until(EC.element_to_be_clickable(
                 (By.XPATH, "//a[contains(@href, 'homedepot.com/p/')]")))
             print(f"   > Found HD link in Google results, clicking...")
-            # Scroll to it first
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", hd_result)
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});", hd_result)
             time.sleep(random.uniform(0.5, 1.5))
             hd_result.click()
             time.sleep(random.uniform(4, 7))
@@ -524,13 +561,88 @@ def navigate_hd_via_google(driver, hd_url, name=''):
             else:
                 print(f"   > Blocked after Google click-through")
         except Exception:
-            print(f"   > No HD result found on Google, trying HD search...")
+            print(f"   > No HD result found on Google")
 
     except Exception as e:
         print(f"   > Google search failed: {e}")
 
-    # Fallback: HD on-site search
-    return navigate_hd_via_site_search(driver, sku)
+    return False
+
+
+def navigate_hd_via_duckduckgo(driver, hd_url, name=''):
+    """Navigate to an HD product page via DuckDuckGo search click-through."""
+    sku = extract_sku_from_url(hd_url)
+    if not sku:
+        return False
+
+    print(f"   > DuckDuckGo search for HD SKU: {sku}")
+
+    try:
+        query = f"site:homedepot.com {sku}"
+        driver.get(f"https://duckduckgo.com/?q={query}")
+        time.sleep(random.uniform(3, 5))
+
+        wait = WebDriverWait(driver, 10)
+
+        try:
+            hd_result = wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//a[contains(@href, 'homedepot.com/p/')]")))
+            print(f"   > Found HD link in DuckDuckGo results, clicking...")
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});", hd_result)
+            time.sleep(random.uniform(0.5, 1.5))
+            hd_result.click()
+            time.sleep(random.uniform(4, 7))
+
+            if not is_hd_blocked(driver):
+                return True
+            else:
+                print(f"   > Blocked after DuckDuckGo click-through")
+        except Exception:
+            print(f"   > No HD result found on DuckDuckGo")
+
+    except Exception as e:
+        print(f"   > DuckDuckGo search failed: {e}")
+
+    return False
+
+
+def navigate_hd_via_bing(driver, hd_url, name=''):
+    """Navigate to an HD product page via Bing search click-through."""
+    sku = extract_sku_from_url(hd_url)
+    if not sku:
+        return False
+
+    print(f"   > Bing search for HD SKU: {sku}")
+
+    try:
+        query = f"site:homedepot.com {sku}"
+        driver.get(f"https://www.bing.com/search?q={query}")
+        time.sleep(random.uniform(3, 5))
+
+        wait = WebDriverWait(driver, 10)
+
+        try:
+            hd_result = wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//a[contains(@href, 'homedepot.com/p/')]")))
+            print(f"   > Found HD link in Bing results, clicking...")
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});", hd_result)
+            time.sleep(random.uniform(0.5, 1.5))
+            hd_result.click()
+            time.sleep(random.uniform(4, 7))
+
+            if not is_hd_blocked(driver):
+                return True
+            else:
+                print(f"   > Blocked after Bing click-through")
+        except Exception:
+            print(f"   > No HD result found on Bing")
+
+    except Exception as e:
+        print(f"   > Bing search failed: {e}")
+
+    return False
 
 
 def navigate_hd_via_site_search(driver, sku):
@@ -595,21 +707,42 @@ def navigate_hd_via_site_search(driver, sku):
 def navigate_to_hd_product(driver, hd_url, name=''):
     """
     Main entry point for navigating to an HD product page.
-    Tries strategies in order: Google click-through → HD site search → direct URL.
-    Returns True if navigation succeeded (not blocked), False otherwise.
+
+    Strategy order:
+      1. GitHub Pages click-through (best referrer, no bot detection risk)
+      2. Random search engine (Google / DuckDuckGo / Bing)
+      3. Different random search engine (retry)
+      4. HD on-site search
+      5. Direct URL (last resort)
     """
-    # Strategy 1: Google search click-through
-    if navigate_hd_via_google(driver, hd_url, name=name):
+    # Strategy 1: GitHub Pages click-through
+    if navigate_hd_via_github_pages(driver, hd_url, name=name):
         return True
 
-    # Strategy 2: Clear cookies, wait, try Google again
-    print(f"   > Clearing cookies and retrying via Google...")
-    clear_hd_cookies(driver)
-    time.sleep(random.uniform(15, 30))
-    if navigate_hd_via_google(driver, hd_url, name=name):
-        return True
+    # Strategy 2: Random search engine
+    search_engines = [
+        navigate_hd_via_google,
+        navigate_hd_via_duckduckgo,
+        navigate_hd_via_bing,
+    ]
+    random.shuffle(search_engines)
 
-    # Strategy 3: Direct URL as last resort
+    for i, engine_fn in enumerate(search_engines):
+        if engine_fn(driver, hd_url, name=name):
+            return True
+        if i < len(search_engines) - 1:
+            time.sleep(random.uniform(2, 5))
+
+    # Strategy 3: HD on-site search
+    sku = extract_sku_from_url(hd_url)
+    if sku:
+        print(f"   > Trying HD on-site search...")
+        clear_hd_cookies(driver)
+        time.sleep(random.uniform(3, 8))
+        if navigate_hd_via_site_search(driver, sku):
+            return True
+
+    # Strategy 4: Direct URL as last resort
     print(f"   > All strategies failed, trying direct URL...")
     try:
         driver.get(hd_url)
