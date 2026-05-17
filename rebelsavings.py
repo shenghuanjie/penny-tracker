@@ -1587,18 +1587,56 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         driver.switch_to.window(driver.window_handles[-1])
 
         hd_status = HDStatus.ERROR
-        try:
-            nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
-            if nav_ok:
-                time.sleep(random.uniform(2, 4))
-                hd_status = check_hd_item_tab_status(driver, name=name)
-            else:
-                hd_status = HDStatus.FAILURE
-        except Exception as e:
-            print(f"   Error checking HD: {e}")
-            hd_status = HDStatus.ERROR
+        import threading
+        result_holder = [HDStatus.ERROR]
 
-        driver.switch_to.window(main_window)
+        def _do_hd_check():
+            try:
+                nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
+                if nav_ok:
+                    time.sleep(random.uniform(2, 4))
+                    result_holder[0] = check_hd_item_tab_status(driver, name=name)
+                else:
+                    result_holder[0] = HDStatus.FAILURE
+            except Exception as e:
+                print(f"   Error checking HD: {e}")
+                result_holder[0] = HDStatus.ERROR
+
+        hd_thread = threading.Thread(target=_do_hd_check, daemon=True)
+        hd_thread.start()
+        hd_thread.join(timeout=90)  # 90s max per item
+
+        if hd_thread.is_alive():
+            print("   !!! HD check timed out (90s). Page hung.")
+            # Kill the hung tab and open a fresh one
+            try:
+                driver.switch_to.window(driver.window_handles[-1])
+                driver.close()
+            except Exception:
+                pass
+            try:
+                driver.switch_to.window(main_window)
+            except Exception:
+                # Driver itself may be hung — need restart
+                print("   !!! Driver unresponsive. Forcing restart...")
+                if restart_count < max_restarts:
+                    restart_count += 1
+                    driver = restart_driver(driver, chrome_profile=chrome_profile,
+                                            profile_dir=profile_dir,
+                                            remote_debug=remote_debug)
+                    warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
+                    main_window = driver.current_window_handle
+                else:
+                    print("Max restarts reached. Stopping.")
+                    break
+            hd_status = HDStatus.ERROR
+        else:
+            hd_status = result_holder[0]
+
+        try:
+            driver.switch_to.window(main_window)
+        except Exception:
+            pass
         checked += 1
 
         # Update deal in memory
