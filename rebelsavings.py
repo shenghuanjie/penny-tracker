@@ -537,15 +537,16 @@ def navigate_hd_via_github_pages(driver, hd_url, name=''):
 
     print(f"   > GitHub Pages click-through for SKU: {sku}")
     try:
+        tabs_before = set(driver.window_handles)
         driver.get(GITHUB_PAGES_URL)
-        time.sleep(random.uniform(2, 4))
+        time.sleep(random.uniform(3, 5))
 
         # Check freshness before using the report
         if not _is_github_pages_fresh(driver):
             return False
 
         # Find the HD link that contains this SKU
-        wait = WebDriverWait(driver, 8)
+        wait = WebDriverWait(driver, 12)
         xpath = f"//a[contains(@href, 'homedepot.com') and contains(@href, '{sku}')]"
         try:
             link = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
@@ -554,6 +555,15 @@ def navigate_hd_via_github_pages(driver, hd_url, name=''):
             time.sleep(random.uniform(0.5, 1.5))
             link.click()
             time.sleep(random.uniform(4, 7))
+
+            # The link has target="_blank" so it opens in a new tab.
+            # Switch to the new tab.
+            tabs_after = set(driver.window_handles)
+            new_tabs = tabs_after - tabs_before
+            if new_tabs:
+                new_tab = new_tabs.pop()
+                driver.switch_to.window(new_tab)
+                time.sleep(random.uniform(2, 4))
 
             if not is_hd_blocked(driver):
                 return True
