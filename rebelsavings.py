@@ -1904,14 +1904,16 @@ def main():
     parser.add_argument("--recheck", action="store_true",
                         help="Re-check items previously marked as 'blocked' "
                              "or 'error' in Phase 2.")
-    parser.add_argument("--batch-size", type=int, default=5,
+    parser.add_argument("--batch-size", type=int, default=None,
                         help="Number of HD tabs to open simultaneously in "
-                             "Phase 2 batch mode (1-10, default: 5).")
+                             "Phase 2 batch mode (1-10, default: random).")
 
     args = parser.parse_args()
 
-    # Validate batch-size range
-    if args.batch_size < 1 or args.batch_size > 10:
+    # Default batch-size to a random value between 1 and 10
+    if args.batch_size is None:
+        args.batch_size = random.randint(1, 10)
+    elif args.batch_size < 1 or args.batch_size > 10:
         parser.error("--batch-size must be between 1 and 10")
 
     # Handle opt-out flag
@@ -1945,6 +1947,8 @@ def main():
     sys.stdout = _TeeWriter(log_path, sys.__stdout__)
     sys.stderr = _TeeWriter(log_path, sys.__stderr__)
     logging.info("Logging to %s", log_path)
+    logging.info("Settings: phase=%s, batch_size=%d, recheck=%s",
+                 args.phase, args.batch_size, args.recheck)
 
     if args.output_dir and not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
