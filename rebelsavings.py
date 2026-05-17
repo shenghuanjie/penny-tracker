@@ -294,7 +294,7 @@ def generate_html_report(deals, output_path):
         name = d.get('name', 'Unknown')
         price = d.get('price', 'N/A')
         url = d.get('url', '#')
-        timestamp = d.get('updated_at', '')
+        timestamp = d.get('updated_at', '') or d.get('original_timestamp', '')
 
         html += f"""<tr>
             <td><img src="{image_src}"></td>
