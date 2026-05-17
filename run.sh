@@ -4,12 +4,14 @@
 # Steps:
 #   1. Clean up TSV (remove old/duplicate entries)
 #   2. Phase 1: collect deals from RebelSavings
-#   3. Update HTML report + git push
-#   4. Phase 2: check HD prices (random batch size 1-10)
+#   3. Update HTML report + git push + wait for GitHub Pages
+#   4. Phase 2: check HD prices (spread over 8 hours)
 #   5. Update HTML report + git push
 #
+# Keeps Mac awake via caffeinate for the entire run.
+#
 # Usage:
-#   ./run.sh            # full pipeline
+#   ./run.sh            # full pipeline (~8 hours)
 #   ./run.sh --skip1    # skip phase 1, start from phase 2
 
 set -uo pipefail
@@ -31,36 +33,50 @@ push() {
     GIT_SSH_COMMAND="$GIT_SSH" git push || echo "Git push failed (non-fatal)"
 }
 
-echo "============================================================"
-echo "  Penny Tracker — $(date '+%Y-%m-%d %H:%M:%S')"
-echo "============================================================"
+run_pipeline() {
+    echo "============================================================"
+    echo "  Penny Tracker — $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "============================================================"
 
-# ── Step 1: Clean up TSV ──
-echo ""
-echo ">>> Cleaning up TSV (removing old/duplicate entries)"
-python rebelsavings.py -m clean || echo "Clean failed (non-fatal)"
-
-# ── Step 2: Phase 1 — collect from RebelSavings ──
-if [[ "$SKIP_PHASE1" == false ]]; then
+    # ── Step 1: Clean up TSV ──
     echo ""
-    echo ">>> Phase 1: Collecting from RebelSavings"
-    python rebelsavings.py --phase 1 || echo "Phase 1 failed (non-fatal)"
+    echo ">>> Cleaning up TSV (removing old/duplicate entries)"
+    python rebelsavings.py -m clean || echo "Clean failed (non-fatal)"
+
+    # ── Step 2: Phase 1 — collect from RebelSavings ──
+    if [[ "$SKIP_PHASE1" == false ]]; then
+        echo ""
+        echo ">>> Phase 1: Collecting from RebelSavings"
+        python rebelsavings.py --phase 1 || echo "Phase 1 failed (non-fatal)"
+        push
+        echo ""
+        echo ">>> Waiting 30s for GitHub Pages to refresh..."
+        sleep 30
+    else
+        echo ""
+        echo ">>> Skipping Phase 1"
+    fi
+
+    # ── Step 3: Phase 2 — check HD prices (spread over 8 hours) ──
+    echo ""
+    echo ">>> Phase 2: Checking HD prices (spread over 8 hours)"
+    python rebelsavings.py --phase 2 --recheck --hours 8 || echo "Phase 2 failed (non-fatal)"
     push
+
     echo ""
-    echo ">>> Waiting 30s for GitHub Pages to refresh..."
-    sleep 30
-else
-    echo ""
-    echo ">>> Skipping Phase 1"
+    echo "============================================================"
+    echo "  Done — $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "============================================================"
+}
+
+# Keep Mac awake for the entire run (prevent sleep).
+# caffeinate -s prevents system sleep; -i prevents idle sleep.
+# The process exits when run_pipeline finishes.
+if command -v caffeinate &>/dev/null; then
+    echo "☕ Keeping Mac awake via caffeinate..."
+    caffeinate -si -w $$ &
+    CAFF_PID=$!
+    trap "kill $CAFF_PID 2>/dev/null" EXIT
 fi
 
-# ── Step 3: Phase 2 — check HD prices ──
-echo ""
-echo ">>> Phase 2: Checking HD prices"
-python rebelsavings.py --phase 2 --recheck || echo "Phase 2 failed (non-fatal)"
-push
-
-echo ""
-echo "============================================================"
-echo "  Done — $(date '+%Y-%m-%d %H:%M:%S')"
-echo "============================================================"
+run_pipeline
