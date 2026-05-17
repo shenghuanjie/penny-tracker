@@ -1779,9 +1779,10 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
 def check_hd_status_phase(driver, deal_list, tsv_output_path,
                           chrome_profile=None, profile_dir=None,
                           remote_debug=None, zip_code=DEFAULT_ZIP,
-                          hd_login=False, recheck=False):
+                          hd_login=False, recheck=False, hours=8):
     """Phase 2: Check HD status using random-sized batches (1-10 tabs).
 
+    Work is spread uniformly over *hours* hours so traffic looks natural.
     Items are processed oldest-first. Each item gets an API check first;
     only items that fail the API are queued for the browser batch.
     Items updated within the last 24 hours are skipped.
@@ -1902,6 +1903,15 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         except Exception:
             pass
 
+    # ── Pacing: spread work uniformly over the time window ─────────
+    total_seconds = hours * 3600
+    phase2_start = time.time()
+    items_remaining = len(browser_queue)
+    # Average seconds per item, with a floor so we don't go too fast
+    avg_interval = max(total_seconds / max(items_remaining, 1), 30)
+    print(f"\n   Pacing: {items_remaining} items over {hours}h "
+          f"(~{avg_interval:.0f}s per item, ~{avg_interval/60:.1f}min)")
+
     main_window = driver.current_window_handle
     consecutive_blocks = 0
     max_consecutive_blocks = 5
@@ -1909,13 +1919,20 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
     i = 0
 
     while i < len(browser_queue):
+        batch_start = time.time()
+
         # Random batch size 1-10 for each batch
         cur_batch_size = random.randint(1, 10)
         batch = browser_queue[i:i + cur_batch_size]
         batch_num += 1
+
+        elapsed_total = time.time() - phase2_start
+        remaining_time = max(total_seconds - elapsed_total, 0)
+        items_left = len(browser_queue) - i
         print(f"\n── Batch {batch_num} (size {len(batch)}): "
               f"items {i + 1}–{i + len(batch)} "
-              f"of {len(browser_queue)} ──")
+              f"of {len(browser_queue)} | "
+              f"{remaining_time/3600:.1f}h left ──")
 
         # Ensure Chrome is alive
         if not is_chrome_alive(driver):
@@ -1932,7 +1949,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
             main_window = driver.current_window_handle
 
         # ── Open a tab for each item in the batch ──────────────────
-        tab_map = []  # (idx, deal, tab_handle)
+        tab_map = []  # (idx, deal, tab_handle, nav_ok)
         for idx, deal in batch:
             hd_url = deal['url']
             name = deal['name']
@@ -2036,7 +2053,6 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                     clear_hd_cookies(driver)
                 except Exception:
                     pass
-                time.sleep(random.uniform(5, 15))
         else:
             consecutive_blocks = 0
             # Browse HD homepage to build trust between batches
@@ -2045,15 +2061,33 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
             except Exception:
                 pass
 
-        # Pause between batches
-        if i + cur_batch_size < len(browser_queue):
-            pause = random.uniform(30, 90)
-            print(f"   Pausing {pause:.0f}s before next batch…")
-            time.sleep(pause)
-
         i += cur_batch_size
 
-    print(f"\nPhase 2 complete: {checked} items checked on HD.")
+        # ── Time-distributed pause ─────────────────────────────────
+        # Calculate how long to sleep so remaining items fill remaining time
+        items_left_after = len(browser_queue) - i
+        if items_left_after <= 0:
+            break
+
+        elapsed_total = time.time() - phase2_start
+        remaining_time = max(total_seconds - elapsed_total, 0)
+        target_interval = remaining_time / items_left_after
+        # Add ±30% jitter so it's not perfectly uniform
+        jitter = target_interval * random.uniform(-0.3, 0.3)
+        pause = max(target_interval + jitter, 15)  # at least 15s
+
+        # Account for time already spent on this batch
+        batch_elapsed = time.time() - batch_start
+        pause = max(pause - batch_elapsed, 10)
+
+        print(f"   Sleeping {pause:.0f}s "
+              f"(~{pause/60:.1f}min, {items_left_after} items in "
+              f"{remaining_time/3600:.1f}h)")
+        time.sleep(pause)
+
+    elapsed = time.time() - phase2_start
+    print(f"\nPhase 2 complete: {checked} items checked on HD "
+          f"in {elapsed/3600:.1f}h.")
 
 
 def main():
@@ -2091,6 +2125,10 @@ def main():
     parser.add_argument("--recheck", action="store_true",
                         help="Re-check items previously marked as 'blocked' "
                              "or 'error' in Phase 2.")
+    parser.add_argument("--hours", type=float, default=8,
+                        help="Spread Phase 2 browser checks over this many "
+                             "hours (default: 8). Work is distributed "
+                             "uniformly with random jitter.")
 
     args = parser.parse_args()
 
@@ -2125,8 +2163,8 @@ def main():
     sys.stdout = _TeeWriter(log_path, sys.__stdout__)
     sys.stderr = _TeeWriter(log_path, sys.__stderr__)
     logging.info("Logging to %s", log_path)
-    logging.info("Settings: phase=%s, recheck=%s",
-                 args.phase, args.recheck)
+    logging.info("Settings: phase=%s, recheck=%s, hours=%.1f",
+                 args.phase, args.recheck, args.hours)
 
     if args.output_dir and not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
@@ -2275,7 +2313,8 @@ def main():
                                       remote_debug=args.remote_debug,
                                       zip_code=args.zip,
                                       hd_login=False,
-                                      recheck=args.recheck)
+                                      recheck=args.recheck,
+                                      hours=args.hours)
             elif run_phase2:
                 print("No HD driver available — skipping Phase 2")
             else:
