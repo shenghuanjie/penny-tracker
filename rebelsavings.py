@@ -1859,28 +1859,36 @@ def main():
     backuptsv_output_path = os.path.join(args.output_dir, BACKUP_TSV_FILENAME)
 
     # --- LOAD EXISTING DATA ---
-    # Minimum number of fields required to parse a row (excluding padding)
-    min_fields = len(FIELDNAMES) - 1  # padding column may be stripped
-
     if os.path.isfile(args.from_tsv):
         print(f"Reading data from {args.from_tsv}...")
+        skipped = 0
         try:
             with open(args.from_tsv, "r", encoding="utf-8") as f_out:
                 f_out.readline()  # skip header
                 for row in f_out:
                     parts = row.strip().split("\t")
-                    # Strip padding whitespace from each field
                     parts = [p.strip() for p in parts]
-                    if len(parts) >= min_fields:
-                        while len(parts) < len(FIELDNAMES):
-                            parts.append("")
-                        row_dict = dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)]))
-                        # Skip empty/header rows
-                        if row_dict.get("name") and row_dict["name"] != "name":
-                            deal_list.append(row_dict)
+                    # Need at least a name (first field) to keep the row
+                    if not parts or not parts[0] or parts[0] == "name":
+                        skipped += 1
+                        continue
+                    # Pad missing fields with empty strings
+                    while len(parts) < len(FIELDNAMES):
+                        parts.append("")
+                    row_dict = dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)]))
+                    deal_list.append(row_dict)
         except Exception as e:
             print(f"Error reading TSV: {e}")
-        print(f"Loaded {len(deal_list)} items from TSV.")
+        print(f"Loaded {len(deal_list)} items from TSV."
+              f"{f' (skipped {skipped} bad rows)' if skipped else ''}")
+
+        # Rewrite TSV to fix any previously truncated rows
+        if deal_list:
+            with open(args.from_tsv, "w", encoding="utf-8") as f_out:
+                print(pad_row(FIELDNAMES), file=f_out)
+                for deal in deal_list:
+                    print(pad_row(deal), file=f_out)
+            print(f"TSV repaired: {len(deal_list)} rows written.")
 
     # --- CLEANING OLD DATA ---
     if args.mode in [RunningMode.CLEAN] and deal_list:
@@ -2007,18 +2015,17 @@ def main():
     # Reload from TSV to pick up any changes from phases
     if os.path.isfile(tsv_output_path):
         deal_list = []
-        min_fields = len(FIELDNAMES) - 1
         with open(tsv_output_path, "r", encoding="utf-8") as f:
             f.readline()  # skip header
             for row in f:
                 parts = row.strip().split("\t")
                 parts = [p.strip() for p in parts]
-                if len(parts) >= min_fields:
-                    while len(parts) < len(FIELDNAMES):
-                        parts.append("")
-                    row_dict = dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)]))
-                    if row_dict.get("name") and row_dict["name"] != "name":
-                        deal_list.append(row_dict)
+                if not parts or not parts[0] or parts[0] == "name":
+                    continue
+                while len(parts) < len(FIELDNAMES):
+                    parts.append("")
+                deal_list.append(
+                    dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)])))
     generate_html_report(deal_list, report_path)
     print(f"Report written to {report_path} ({len(deal_list)} items)")
 
