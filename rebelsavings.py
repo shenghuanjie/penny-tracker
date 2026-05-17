@@ -1598,67 +1598,73 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
 def check_hd_status_phase(driver, deal_list, tsv_output_path,
                           chrome_profile=None, profile_dir=None,
                           remote_debug=None, zip_code=DEFAULT_ZIP,
-                          hd_login=False):
-    """Phase 2: Check HD status for unchecked items, oldest first.
-    Skips items that are already PENNY, OUT_OF_STOCK, or recently checked.
-    Auto-restarts Chrome if connectivity is lost."""
+                          hd_login=False, recheck=False, batch_size=5):
+    """Phase 2: Check HD status using a batch-tab approach.
+
+    Opens *batch_size* tabs simultaneously, lets them all load, then reads
+    each tab's price. This mimics natural browsing and reduces bot detection.
+
+    Items are processed oldest-first. Each item gets an API check first;
+    only items that fail the API are queued for the browser batch.
+
+    If *recheck* is True, items with 'blocked' or 'error' status are also
+    re-checked (in addition to unchecked items).
+    """
     # Find items that need HD checking
     to_check = []
     for i, deal in enumerate(deal_list):
         status = deal.get('hd_status', '')
-        if status in (HDStatus.PENNY, HDStatus.OUT_OF_STOCK):
-            continue
         url = deal.get('url', '')
         if not url or 'homedepot.com' not in url:
             continue
-        # Skip if checked within last day
-        updated = deal.get('updated_at', '')
-        if updated and status:
-            now_ts = datetime.datetime.fromtimestamp(
-                time.time()).strftime(TIMESTAMP_FORMAT)
-            if is_within_x_days(now_ts, updated, 1):
-                continue
+        # Always skip terminal statuses
+        if status in (HDStatus.PENNY, HDStatus.OUT_OF_STOCK):
+            continue
+        # Recheck mode: include blocked/error items
+        if recheck and status in (HDStatus.BLOCKED, HDStatus.ERROR,
+                                  HDStatus.FAILURE):
+            to_check.append((i, deal))
+            continue
+        # Normal mode: skip items that have a status and were checked recently
+        if status and status != 'unchecked':
+            updated = deal.get('updated_at', '')
+            if updated:
+                now_ts = datetime.datetime.fromtimestamp(
+                    time.time()).strftime(TIMESTAMP_FORMAT)
+                if is_within_x_days(now_ts, updated, 1):
+                    continue
         to_check.append((i, deal))
 
     # Sort by original_timestamp ascending (oldest first)
     to_check.sort(key=lambda x: x[1].get('original_timestamp', ''))
 
+    recheck_count = sum(1 for _, d in to_check
+                        if d.get('hd_status') in (HDStatus.BLOCKED,
+                                                  HDStatus.ERROR,
+                                                  HDStatus.FAILURE))
     print(f"\n{'='*60}")
-    print(f"PHASE 2: Checking {len(to_check)} items on Home Depot (oldest first)")
+    print(f"PHASE 2: Checking {len(to_check)} items on Home Depot "
+          f"(oldest first, batch_size={batch_size})")
+    if recheck:
+        print(f"  Re-check mode: {recheck_count} blocked/error items included")
     print(f"{'='*60}")
 
     if not to_check:
         print("No items to check.")
         return
 
-    main_window = driver.current_window_handle
-    consecutive_blocks = 0
-    max_consecutive_blocks = 3
     checked = 0
     restart_count = 0
     max_restarts = 3
 
-    for idx, deal in to_check:
+    # ── Pass 1: API checks (fast, no browser) ──────────────────────
+    browser_queue = []  # (idx, deal) pairs that need browser fallback
+    for pos, (idx, deal) in enumerate(to_check):
         name = deal['name']
         hd_url = deal['url']
-        print(f"\n[{checked + 1}/{len(to_check)}] {name[:60]}")
-        print(f"   URL: {hd_url}")
-
-        # Check if Chrome is still alive; restart if needed
-        if not is_chrome_alive(driver):
-            if restart_count >= max_restarts:
-                print("Max driver restarts reached. Stopping HD checks.")
-                break
-            restart_count += 1
-            print(f"   Chrome lost connectivity. Restarting ({restart_count}/{max_restarts})...")
-            driver = restart_driver(driver, chrome_profile=chrome_profile,
-                                    profile_dir=profile_dir,
-                                    remote_debug=remote_debug)
-            warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
-            main_window = driver.current_window_handle
-
-        # --- Try API price check first (no browser needed) ---
         sku = extract_sku_from_url(hd_url)
+        print(f"\n[API {pos + 1}/{len(to_check)}] {name[:60]}")
+
         api_price, api_status = None, None
         if sku:
             api_price, api_status = check_hd_price_api(sku, zip_code=zip_code)
@@ -1666,124 +1672,199 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 print(f"   API: ${api_price:.2f} → {api_status.upper()}"
                       if api_price else f"   API: → {api_status.upper()}")
 
-        # If API gave a definitive answer, skip browser check
         if api_status in (HDStatus.PENNY, HDStatus.NOT_PENNY,
                           HDStatus.CLEARANCE, HDStatus.PENNY_CANDIDATE):
-            hd_status = api_status
+            now = datetime.datetime.fromtimestamp(
+                time.time()).strftime(TIMESTAMP_FORMAT)
+            deal_list[idx]['hd_status'] = api_status
+            deal_list[idx]['updated_at'] = now
             checked += 1
+            # Save every 10 API successes
+            if checked % 10 == 0:
+                with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
+                    print(pad_row(FIELDNAMES), file=f_out)
+                    for d in deal_list:
+                        print(pad_row(d), file=f_out)
+            time.sleep(random.uniform(0.5, 1.5))
         else:
-            # --- Browser fallback ---
-            if len(driver.window_handles) < 2:
-                driver.execute_script("window.open('');")
-            driver.switch_to.window(driver.window_handles[-1])
+            browser_queue.append((idx, deal))
 
-            hd_status = HDStatus.ERROR
-            import threading
-            result_holder = [HDStatus.ERROR]
+    # Save after API pass
+    if checked > 0:
+        with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
+            print(pad_row(FIELDNAMES), file=f_out)
+            for d in deal_list:
+                print(pad_row(d), file=f_out)
+    print(f"\nAPI pass done: {checked} checked, "
+          f"{len(browser_queue)} need browser.")
 
-            def _do_hd_check():
-                try:
-                    nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
-                    if nav_ok:
-                        time.sleep(random.uniform(2, 4))
-                        result_holder[0] = check_hd_item_tab_status(
-                            driver, name=name)
-                    else:
-                        result_holder[0] = HDStatus.FAILURE
-                except Exception as e:
-                    print(f"   Error checking HD: {e}")
-                    result_holder[0] = HDStatus.ERROR
+    # ── Pass 2: Browser batch checks ───────────────────────────────
+    if not browser_queue:
+        print(f"\nPhase 2 complete: {checked} items checked on HD.")
+        return
 
-            hd_thread = threading.Thread(target=_do_hd_check, daemon=True)
-            hd_thread.start()
-            hd_thread.join(timeout=90)
+    main_window = driver.current_window_handle
+    consecutive_batch_blocks = 0
+    max_consecutive_batch_blocks = 3
+    batch_num = 0
+    i = 0
 
-            if hd_thread.is_alive():
-                print("   !!! HD check timed out (90s). Page hung.")
-                try:
-                    driver.switch_to.window(driver.window_handles[-1])
-                    driver.close()
-                except Exception:
-                    pass
-                try:
-                    driver.switch_to.window(main_window)
-                except Exception:
-                    print("   !!! Driver unresponsive. Forcing restart...")
-                    if restart_count < max_restarts:
-                        restart_count += 1
-                        driver = restart_driver(
-                            driver, chrome_profile=chrome_profile,
-                            profile_dir=profile_dir,
-                            remote_debug=remote_debug)
-                        warm_up_hd_session(driver, zip_code=zip_code,
-                                           hd_login=hd_login)
-                        main_window = driver.current_window_handle
-                    else:
-                        print("Max restarts reached. Stopping.")
-                        break
-                hd_status = HDStatus.ERROR
-            else:
-                hd_status = result_holder[0]
+    while i < len(browser_queue):
+        batch = browser_queue[i:i + batch_size]
+        batch_num += 1
+        print(f"\n── Batch {batch_num}: items {i + 1}–"
+              f"{min(i + batch_size, len(browser_queue))} "
+              f"of {len(browser_queue)} ──")
 
+        # Ensure Chrome is alive
+        if not is_chrome_alive(driver):
+            if restart_count >= max_restarts:
+                print("Max driver restarts reached. Stopping HD checks.")
+                break
+            restart_count += 1
+            print(f"   Chrome lost connectivity. Restarting "
+                  f"({restart_count}/{max_restarts})...")
+            driver = restart_driver(driver, chrome_profile=chrome_profile,
+                                    profile_dir=profile_dir,
+                                    remote_debug=remote_debug)
+            warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
+            main_window = driver.current_window_handle
+
+        # ── Open tabs for this batch ───────────────────────────────
+        tab_map = []  # list of (idx, deal, tab_handle)
+        for idx, deal in batch:
+            hd_url = deal['url']
+            name = deal['name']
             try:
-                driver.switch_to.window(main_window)
+                driver.execute_script("window.open('', '_blank');")
+                new_tab = driver.window_handles[-1]
+                driver.switch_to.window(new_tab)
+                # Use navigate_to_hd_product for anti-detection
+                nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
+                tab_map.append((idx, deal, new_tab, nav_ok))
+                print(f"   Opened tab: {name[:55]}"
+                      f" {'✅' if nav_ok else '❌'}")
+                # Stagger between tab opens
+                time.sleep(random.uniform(1.5, 3.0))
+            except Exception as exc:
+                print(f"   Failed to open tab for {name[:40]}: {exc}")
+                break
+
+        if not tab_map:
+            print("   No tabs opened — skipping batch")
+            consecutive_batch_blocks += 1
+            if consecutive_batch_blocks >= max_consecutive_batch_blocks:
+                print(f"   {max_consecutive_batch_blocks} consecutive batch "
+                      "failures — restarting Chrome")
+                if restart_count < max_restarts:
+                    restart_count += 1
+                    driver = restart_driver(driver,
+                                            chrome_profile=chrome_profile,
+                                            profile_dir=profile_dir,
+                                            remote_debug=remote_debug)
+                    warm_up_hd_session(driver, zip_code=zip_code,
+                                       hd_login=hd_login)
+                    main_window = driver.current_window_handle
+                    consecutive_batch_blocks = 0
+                else:
+                    print("Max restarts reached. Stopping.")
+                    break
+            i += batch_size
+            continue
+
+        # ── Wait for pages to finish loading ───────────────────────
+        load_wait = random.uniform(5, 10)
+        print(f"   Waiting {load_wait:.0f}s for {len(tab_map)} tabs to load…")
+        time.sleep(load_wait)
+
+        # ── Read each tab's status ─────────────────────────────────
+        batch_checked = 0
+        batch_blocked = 0
+        for idx, deal, tab_handle, nav_ok in tab_map:
+            name = deal['name']
+            try:
+                driver.switch_to.window(tab_handle)
+                if nav_ok:
+                    time.sleep(random.uniform(1, 2))
+                    hd_status = check_hd_item_tab_status(driver, name=name)
+                else:
+                    hd_status = HDStatus.FAILURE
+
+                now = datetime.datetime.fromtimestamp(
+                    time.time()).strftime(TIMESTAMP_FORMAT)
+                deal_list[idx]['hd_status'] = hd_status
+                deal_list[idx]['updated_at'] = now
+                print(f"   Tab: {name[:50]} → {hd_status.upper()}")
+                checked += 1
+                batch_checked += 1
+
+                if hd_status in (HDStatus.BLOCKED, HDStatus.FAILURE,
+                                 HDStatus.ERROR):
+                    batch_blocked += 1
+            except Exception as exc:
+                print(f"   Error reading tab for {name[:40]}: {exc}")
+
+        # ── Close all batch tabs ───────────────────────────────────
+        for _, _, tab_handle, _ in tab_map:
+            try:
+                driver.switch_to.window(tab_handle)
+                driver.close()
             except Exception:
                 pass
-            checked += 1
 
-        # Update deal in memory
-        now = datetime.datetime.fromtimestamp(
-            time.time()).strftime(TIMESTAMP_FORMAT)
-        deal_list[idx]['hd_status'] = hd_status
-        deal_list[idx]['updated_at'] = now
-        print(f"   → {hd_status.upper()}")
-
-        # Handle blocks
-        if hd_status in (HDStatus.BLOCKED, HDStatus.FAILURE, HDStatus.ERROR):
-            # Check if it's a connectivity issue vs a real block
-            if not is_chrome_alive(driver):
-                if restart_count >= max_restarts:
-                    print("Max driver restarts reached. Stopping HD checks.")
-                    break
-                restart_count += 1
-                print(f"   Chrome disconnected. Restarting ({restart_count}/{max_restarts})...")
-                driver = restart_driver(driver, chrome_profile=chrome_profile,
-                                        profile_dir=profile_dir,
-                                        remote_debug=remote_debug)
-                warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
-                main_window = driver.current_window_handle
-                consecutive_blocks = 0  # reset — it was a connectivity issue
-                continue  # retry this item
-
-            consecutive_blocks += 1
-            print(f"   !!! BLOCKED ({consecutive_blocks}/{max_consecutive_blocks})")
-            if len(driver.window_handles) > 1:
-                driver.switch_to.window(driver.window_handles[-1])
-                clear_hd_cookies(driver)
+        # Switch back to main tab
+        try:
+            remaining = driver.window_handles
+            if main_window in remaining:
                 driver.switch_to.window(main_window)
-            if consecutive_blocks >= max_consecutive_blocks:
-                print(f"   !!! {max_consecutive_blocks} consecutive blocks. "
-                      "Stopping HD checks.")
+            elif remaining:
+                driver.switch_to.window(remaining[0])
+                main_window = remaining[0]
+        except Exception:
+            pass
+
+        # Track consecutive batch failures
+        if batch_checked == 0 or batch_blocked == len(tab_map):
+            consecutive_batch_blocks += 1
+            print(f"   Batch {batch_num}: all blocked/failed "
+                  f"({consecutive_batch_blocks}/{max_consecutive_batch_blocks})")
+            if consecutive_batch_blocks >= max_consecutive_batch_blocks:
+                print(f"   {max_consecutive_batch_blocks} consecutive batch "
+                      "failures — stopping HD checks.")
                 break
+            # Clear cookies and try to recover
+            try:
+                clear_hd_cookies(driver)
+            except Exception:
+                pass
         else:
-            consecutive_blocks = 0
-            if len(driver.window_handles) > 1:
-                driver.switch_to.window(driver.window_handles[-1])
-                browse_hd_homepage(driver)
+            consecutive_batch_blocks = 0
+            # Browse HD homepage on main tab to build trust
+            try:
                 driver.switch_to.window(main_window)
+                browse_hd_homepage(driver)
+            except Exception:
+                pass
 
-        # Pacing between HD checks
-        if hd_status not in (HDStatus.OUT_OF_STOCK,
-                             HDStatus.BLOCKED, HDStatus.FAILURE):
-            delay = random.uniform(60, 120)
-            print(f"   Waiting {delay:.0f}s before next HD check...")
-            time.sleep(delay)
+        # Save TSV after each batch
+        with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
+            print(pad_row(FIELDNAMES), file=f_out)
+            for d in deal_list:
+                print(pad_row(d), file=f_out)
 
-    # Rewrite TSV with updated statuses
+        # Pause between batches
+        if i + batch_size < len(browser_queue):
+            pause = random.uniform(30, 60)
+            print(f"   Pausing {pause:.0f}s before next batch…")
+            time.sleep(pause)
+
+        i += batch_size
+
+    # Final TSV save
     with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
         print(pad_row(FIELDNAMES), file=f_out)
-        for deal in deal_list:
-            print(pad_row(deal), file=f_out)
+        for d in deal_list:
+            print(pad_row(d), file=f_out)
 
     print(f"\nPhase 2 complete: {checked} items checked on HD.")
 
@@ -1816,8 +1897,24 @@ def main():
         RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL, RunningMode.CHECK],
                         default=RunningMode.ALL,
                         help="Running mode.")
+    parser.add_argument("--phase", choices=["1", "2", "both"], default="both",
+                        help="Run only phase 1 (collect), phase 2 (HD check), "
+                             "or both (default: both). Only applies to 'search' "
+                             "and 'all' modes.")
+    parser.add_argument("--recheck", action="store_true",
+                        help="Re-check items previously marked as 'blocked' "
+                             "or 'error' in Phase 2.")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Number of HD tabs to open simultaneously in "
+                             "Phase 2 batch mode (1-10, default: random).")
 
     args = parser.parse_args()
+
+    # Default batch-size to a random value between 1 and 10
+    if args.batch_size is None:
+        args.batch_size = random.randint(1, 10)
+    elif args.batch_size < 1 or args.batch_size > 10:
+        parser.error("--batch-size must be between 1 and 10")
 
     # Handle opt-out flag
     if args.no_chrome_profile:
@@ -1850,6 +1947,8 @@ def main():
     sys.stdout = _TeeWriter(log_path, sys.__stdout__)
     sys.stderr = _TeeWriter(log_path, sys.__stderr__)
     logging.info("Logging to %s", log_path)
+    logging.info("Settings: phase=%s, batch_size=%d, recheck=%s",
+                 args.phase, args.batch_size, args.recheck)
 
     if args.output_dir and not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
@@ -1930,15 +2029,17 @@ def main():
 
     # --- SEARCH AND CHECK (TWO-PHASE) ---
     if args.mode in [RunningMode.SEARCH, RunningMode.ALL]:
+        run_phase1 = args.phase in ("1", "both")
+        run_phase2 = args.phase in ("2", "both")
         seen_ids = set(deal['name'] for deal in deal_list)
         max_items = args.max_items if args.max_items is not None else float('inf')
 
-        # --- SETUP: Launch HD driver upfront, warm up, login if needed ---
-        # This driver stays alive through Phase 1 and is reused for Phase 2.
-        hd_driver = get_driver(chrome_profile=args.chrome_profile,
-                               profile_dir=args.profile_dir,
-                               remote_debug=args.remote_debug)
-        try:
+        # --- SETUP: Launch HD driver if Phase 2 will run ---
+        hd_driver = None
+        if run_phase2:
+            hd_driver = get_driver(chrome_profile=args.chrome_profile,
+                                   profile_dir=args.profile_dir,
+                                   remote_debug=args.remote_debug)
             print(f"\n{'='*60}")
             print("SETUP: Warming up HD session with your profile")
             print(f"{'='*60}")
@@ -1946,27 +2047,77 @@ def main():
                                hd_login=args.hd_login)
             print("HD session ready. You can walk away now.\n")
 
+        try:
             # --- PHASE 1: Collect from RebelSavings (separate clean UC) ---
-            # HD driver stays open in background — no profile conflict.
-            rebel_driver = get_driver(chrome_profile=None, profile_dir=None,
-                                      remote_debug=None)
-            try:
-                collect_rebel_items(rebel_driver, deal_list, seen_ids,
-                                    tsv_output_path,
-                                    zip_code=args.zip, max_items=max_items,
-                                    max_days=60)
-            finally:
-                rebel_driver.quit()
-                print("Phase 1 driver closed.")
+            if run_phase1:
+                rebel_driver = get_driver(chrome_profile=None,
+                                          profile_dir=None,
+                                          remote_debug=None)
+                try:
+                    collect_rebel_items(rebel_driver, deal_list, seen_ids,
+                                        tsv_output_path,
+                                        zip_code=args.zip,
+                                        max_items=max_items,
+                                        max_days=60)
+                finally:
+                    rebel_driver.quit()
+                    print("Phase 1 driver closed.")
 
-            # Git push after collection
-            print("\n=== Pushing collected data ===")
+                # Git push after collection
+                print("\n=== Pushing collected data ===")
+                generate_html_report(deal_list, report_path)
+                try:
+                    subprocess.run(["git", "add", "-A"],
+                                   cwd=args.output_dir, check=True)
+                    subprocess.run(["git", "commit", "-m",
+                                    "update data (collection)"],
+                                   cwd=args.output_dir, check=True)
+                    subprocess.run(
+                        ["git", "push"], cwd=args.output_dir,
+                        env={**os.environ,
+                             "GIT_SSH_COMMAND":
+                                 "ssh -i ~/.ssh/id_rsa_public_github"
+                                 " -o IdentitiesOnly=yes"},
+                        check=True)
+                    print("Collection data pushed.")
+                except subprocess.CalledProcessError as e:
+                    print(f"Git push failed (non-fatal): {e}")
+            else:
+                print(f"\nSkipping Phase 1 (--phase {args.phase})")
+
+            # --- PHASE 2: HD checks ---
+            if run_phase2 and hd_driver:
+                print(f"\n{'='*60}")
+                print(f"PHASE 2: HD checks"
+                      f"{' (re-checking blocked/error)' if args.recheck else ''}"
+                      f" [batch_size={args.batch_size}]")
+                print(f"{'='*60}")
+                check_hd_status_phase(hd_driver, deal_list, tsv_output_path,
+                                      chrome_profile=args.chrome_profile,
+                                      profile_dir=args.profile_dir,
+                                      remote_debug=args.remote_debug,
+                                      zip_code=args.zip,
+                                      hd_login=False,
+                                      recheck=args.recheck,
+                                      batch_size=args.batch_size)
+            elif run_phase2:
+                print("No HD driver available — skipping Phase 2")
+            else:
+                print(f"\nSkipping Phase 2 (--phase {args.phase})")
+        finally:
+            if hd_driver:
+                hd_driver.quit()
+                print("HD driver closed.")
+
+        # Git push after HD checks (or after phase 1 if phase 2 skipped)
+        if run_phase2:
+            print("\n=== Pushing HD check results ===")
             generate_html_report(deal_list, report_path)
             try:
                 subprocess.run(["git", "add", "-A"],
                                cwd=args.output_dir, check=True)
                 subprocess.run(["git", "commit", "-m",
-                                "update data (collection)"],
+                                "update data (HD checks)"],
                                cwd=args.output_dir, check=True)
                 subprocess.run(
                     ["git", "push"], cwd=args.output_dir,
@@ -1975,37 +2126,9 @@ def main():
                              "ssh -i ~/.ssh/id_rsa_public_github"
                              " -o IdentitiesOnly=yes"},
                     check=True)
-                print("Collection data pushed.")
+                print("HD check data pushed.")
             except subprocess.CalledProcessError as e:
                 print(f"Git push failed (non-fatal): {e}")
-
-            # --- PHASE 2: HD checks (reuse the HD driver) ---
-            check_hd_status_phase(hd_driver, deal_list, tsv_output_path,
-                                  chrome_profile=args.chrome_profile,
-                                  profile_dir=args.profile_dir,
-                                  remote_debug=args.remote_debug,
-                                  zip_code=args.zip,
-                                  hd_login=False)
-        finally:
-            hd_driver.quit()
-            print("HD driver closed.")
-
-        # Git push after HD checks
-        print("\n=== Pushing HD check results ===")
-        generate_html_report(deal_list, report_path)
-        try:
-            subprocess.run(["git", "add", "-A"], cwd=args.output_dir, check=True)
-            subprocess.run(["git", "commit", "-m", "update data (HD checks)"],
-                           cwd=args.output_dir, check=True)
-            subprocess.run(
-                ["git", "push"], cwd=args.output_dir,
-                env={**os.environ,
-                     "GIT_SSH_COMMAND": "ssh -i ~/.ssh/id_rsa_public_github"
-                                       " -o IdentitiesOnly=yes"},
-                check=True)
-            print("HD check data pushed.")
-        except subprocess.CalledProcessError as e:
-            print(f"Git push failed (non-fatal): {e}")
 
     # --- REPORT ONLY MODE ---
     elif args.mode == RunningMode.REPORT:
