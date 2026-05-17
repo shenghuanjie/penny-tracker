@@ -196,6 +196,7 @@ def _load_fb_deals(output_dir):
 def generate_html_report(deals, output_path):
     """Creates a visual HTML report with images, status colors, and timestamps.
     Includes a second tab for Facebook group deals if fb_deals.tsv exists."""
+    print(f"Generating HTML report with {len(deals)} items → {output_path}")
 
     # --- SORTING LOGIC ---
     status_priority = {
