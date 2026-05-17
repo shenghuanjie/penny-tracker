@@ -487,10 +487,50 @@ def check_hd_price_api(sku, zip_code=DEFAULT_ZIP):
 
 GITHUB_PAGES_URL = "https://shenghuanjie.github.io/penny-tracker/"
 
+# Cache: avoid re-checking freshness on every single item
+_github_pages_fresh = None  # True/False/None
+_github_pages_checked_at = 0
+
+
+def _is_github_pages_fresh(driver, max_age_minutes=10):
+    """Check if the GitHub Pages report was updated within *max_age_minutes*.
+    Looks for the 'Updated: YYYY-MM-DD HH:MM' text in the page.
+    Result is cached for 5 minutes to avoid repeated checks."""
+    global _github_pages_fresh, _github_pages_checked_at
+
+    # Use cached result if checked recently (within 5 min)
+    if _github_pages_fresh is not None and time.time() - _github_pages_checked_at < 300:
+        return _github_pages_fresh
+
+    try:
+        meta = driver.find_elements(By.CLASS_NAME, "meta")
+        for el in meta:
+            text = el.text  # e.g. "Updated: 2026-05-17 14:30"
+            match = re.search(r'Updated:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})', text)
+            if match:
+                report_time = datetime.datetime.strptime(
+                    match.group(1), "%Y-%m-%d %H:%M")
+                age = datetime.datetime.now() - report_time
+                fresh = age.total_seconds() < max_age_minutes * 60
+                _github_pages_fresh = fresh
+                _github_pages_checked_at = time.time()
+                if not fresh:
+                    print(f"   > GitHub Pages report is stale "
+                          f"(updated {age.total_seconds()/60:.0f}m ago)")
+                return fresh
+    except Exception:
+        pass
+
+    _github_pages_fresh = False
+    _github_pages_checked_at = time.time()
+    print(f"   > Could not determine GitHub Pages freshness")
+    return False
+
 
 def navigate_hd_via_github_pages(driver, hd_url, name=''):
     """Navigate to an HD product page by clicking its link on the GitHub
-    Pages report.  This gives a legitimate Referer from github.io."""
+    Pages report.  This gives a legitimate Referer from github.io.
+    Skips if the report is stale (>10 minutes old)."""
     sku = extract_sku_from_url(hd_url)
     if not sku:
         return False
@@ -499,6 +539,10 @@ def navigate_hd_via_github_pages(driver, hd_url, name=''):
     try:
         driver.get(GITHUB_PAGES_URL)
         time.sleep(random.uniform(2, 4))
+
+        # Check freshness before using the report
+        if not _is_github_pages_fresh(driver):
+            return False
 
         # Find the HD link that contains this SKU
         wait = WebDriverWait(driver, 8)
@@ -706,34 +750,28 @@ def navigate_hd_via_site_search(driver, sku):
 
 def navigate_to_hd_product(driver, hd_url, name=''):
     """
-    Main entry point for navigating to an HD product page.
+    Navigate to an HD product page via a randomly chosen source.
 
-    Strategy order:
-      1. GitHub Pages click-through (best referrer, no bot detection risk)
-      2. Random search engine (Google / DuckDuckGo / Bing)
-      3. Different random search engine (retry)
-      4. HD on-site search
-      5. Direct URL (last resort)
+    Picks one source at random (GitHub Pages, Google, DuckDuckGo, Bing),
+    tries it, and only falls back to others if it fails.  This distributes
+    traffic across sources and avoids triggering any single engine's bot
+    detection.
     """
-    # Strategy 1: GitHub Pages click-through
-    if navigate_hd_via_github_pages(driver, hd_url, name=name):
-        return True
-
-    # Strategy 2: Random search engine
-    search_engines = [
+    sources = [
+        navigate_hd_via_github_pages,
         navigate_hd_via_google,
         navigate_hd_via_duckduckgo,
         navigate_hd_via_bing,
     ]
-    random.shuffle(search_engines)
+    random.shuffle(sources)
 
-    for i, engine_fn in enumerate(search_engines):
-        if engine_fn(driver, hd_url, name=name):
+    for i, source_fn in enumerate(sources):
+        if source_fn(driver, hd_url, name=name):
             return True
-        if i < len(search_engines) - 1:
-            time.sleep(random.uniform(2, 5))
+        if i < len(sources) - 1:
+            time.sleep(random.uniform(2, 4))
 
-    # Strategy 3: HD on-site search
+    # Fallback: HD on-site search
     sku = extract_sku_from_url(hd_url)
     if sku:
         print(f"   > Trying HD on-site search...")
@@ -742,8 +780,8 @@ def navigate_to_hd_product(driver, hd_url, name=''):
         if navigate_hd_via_site_search(driver, sku):
             return True
 
-    # Strategy 4: Direct URL as last resort
-    print(f"   > All strategies failed, trying direct URL...")
+    # Last resort: direct URL
+    print(f"   > All sources failed, trying direct URL...")
     try:
         driver.get(hd_url)
         time.sleep(random.uniform(3, 5))
@@ -1731,19 +1769,20 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
 def check_hd_status_phase(driver, deal_list, tsv_output_path,
                           chrome_profile=None, profile_dir=None,
                           remote_debug=None, zip_code=DEFAULT_ZIP,
-                          hd_login=False, recheck=False, batch_size=5):
-    """Phase 2: Check HD status using a batch-tab approach.
-
-    Opens *batch_size* tabs simultaneously, lets them all load, then reads
-    each tab's price. This mimics natural browsing and reduces bot detection.
+                          hd_login=False, recheck=False):
+    """Phase 2: Check HD status using random-sized batches (1-10 tabs).
 
     Items are processed oldest-first. Each item gets an API check first;
     only items that fail the API are queued for the browser batch.
+    Items updated within the last 24 hours are skipped.
 
     If *recheck* is True, items with 'blocked' or 'error' status are also
-    re-checked (in addition to unchecked items).
+    re-checked.
     """
     # Find items that need HD checking
+    now_ts = datetime.datetime.fromtimestamp(
+        time.time()).strftime(TIMESTAMP_FORMAT)
+    skipped_24h = 0
     to_check = []
     for i, deal in enumerate(deal_list):
         status = deal.get('hd_status', '')
@@ -1753,19 +1792,17 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         # Always skip terminal statuses
         if status in (HDStatus.PENNY, HDStatus.OUT_OF_STOCK):
             continue
-        # Recheck mode: include blocked/error items
-        if recheck and status in (HDStatus.BLOCKED, HDStatus.ERROR,
-                                  HDStatus.FAILURE):
-            to_check.append((i, deal))
+        # Skip anything updated within the last 24 hours
+        updated = deal.get('updated_at', '')
+        if updated and is_within_x_days(now_ts, updated, 1):
+            skipped_24h += 1
             continue
-        # Normal mode: skip items that have a status and were checked recently
+        # Normal mode: only unchecked items
+        # Recheck mode: also include blocked/error/failure
         if status and status != 'unchecked':
-            updated = deal.get('updated_at', '')
-            if updated:
-                now_ts = datetime.datetime.fromtimestamp(
-                    time.time()).strftime(TIMESTAMP_FORMAT)
-                if is_within_x_days(now_ts, updated, 1):
-                    continue
+            if not (recheck and status in (HDStatus.BLOCKED, HDStatus.ERROR,
+                                           HDStatus.FAILURE)):
+                continue
         to_check.append((i, deal))
 
     # Sort by original_timestamp ascending (oldest first)
@@ -1777,7 +1814,9 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                                                   HDStatus.FAILURE))
     print(f"\n{'='*60}")
     print(f"PHASE 2: Checking {len(to_check)} items on Home Depot "
-          f"(oldest first, batch_size={batch_size})")
+          f"(oldest first)")
+    if skipped_24h:
+        print(f"  Skipped {skipped_24h} items updated within 24h")
     if recheck:
         print(f"  Re-check mode: {recheck_count} blocked/error items included")
     print(f"{'='*60}")
@@ -1831,22 +1870,41 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
     print(f"\nAPI pass done: {checked} checked, "
           f"{len(browser_queue)} need browser.")
 
-    # ── Pass 2: Browser batch checks ───────────────────────────────
+    # ── Pass 2: Browser batch checks (random batch size 1-10) ───────
     if not browser_queue:
         print(f"\nPhase 2 complete: {checked} items checked on HD.")
         return
 
+    def _save_tsv():
+        with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
+            print(pad_row(FIELDNAMES), file=f_out)
+            for d in deal_list:
+                print(pad_row(d), file=f_out)
+
+    def _close_extra_tabs(keep_handle):
+        """Close every tab except *keep_handle*."""
+        try:
+            for h in driver.window_handles:
+                if h != keep_handle:
+                    driver.switch_to.window(h)
+                    driver.close()
+            driver.switch_to.window(keep_handle)
+        except Exception:
+            pass
+
     main_window = driver.current_window_handle
-    consecutive_batch_blocks = 0
-    max_consecutive_batch_blocks = 3
+    consecutive_blocks = 0
+    max_consecutive_blocks = 5
     batch_num = 0
     i = 0
 
     while i < len(browser_queue):
-        batch = browser_queue[i:i + batch_size]
+        # Random batch size 1-10 for each batch
+        cur_batch_size = random.randint(1, 10)
+        batch = browser_queue[i:i + cur_batch_size]
         batch_num += 1
-        print(f"\n── Batch {batch_num}: items {i + 1}–"
-              f"{min(i + batch_size, len(browser_queue))} "
+        print(f"\n── Batch {batch_num} (size {len(batch)}): "
+              f"items {i + 1}–{i + len(batch)} "
               f"of {len(browser_queue)} ──")
 
         # Ensure Chrome is alive
@@ -1863,8 +1921,8 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
             warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
             main_window = driver.current_window_handle
 
-        # ── Open tabs for this batch ───────────────────────────────
-        tab_map = []  # list of (idx, deal, tab_handle)
+        # ── Open a tab for each item in the batch ──────────────────
+        tab_map = []  # (idx, deal, tab_handle)
         for idx, deal in batch:
             hd_url = deal['url']
             name = deal['name']
@@ -1872,25 +1930,24 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 driver.execute_script("window.open('', '_blank');")
                 new_tab = driver.window_handles[-1]
                 driver.switch_to.window(new_tab)
-                # Use navigate_to_hd_product for anti-detection
                 nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
                 tab_map.append((idx, deal, new_tab, nav_ok))
-                print(f"   Opened tab: {name[:55]}"
+                print(f"   Opened: {name[:55]}"
                       f" {'✅' if nav_ok else '❌'}")
                 # Stagger between tab opens
-                time.sleep(random.uniform(1.5, 3.0))
+                if len(batch) > 1:
+                    time.sleep(random.uniform(1.5, 3.0))
             except Exception as exc:
                 print(f"   Failed to open tab for {name[:40]}: {exc}")
-                break
 
         if not tab_map:
             print("   No tabs opened — skipping batch")
-            consecutive_batch_blocks += 1
-            if consecutive_batch_blocks >= max_consecutive_batch_blocks:
-                print(f"   {max_consecutive_batch_blocks} consecutive batch "
-                      "failures — restarting Chrome")
+            consecutive_blocks += 1
+            if consecutive_blocks >= max_consecutive_blocks:
                 if restart_count < max_restarts:
                     restart_count += 1
+                    print(f"   Restarting Chrome "
+                          f"({restart_count}/{max_restarts})...")
                     driver = restart_driver(driver,
                                             chrome_profile=chrome_profile,
                                             profile_dir=profile_dir,
@@ -1898,15 +1955,15 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                     warm_up_hd_session(driver, zip_code=zip_code,
                                        hd_login=hd_login)
                     main_window = driver.current_window_handle
-                    consecutive_batch_blocks = 0
+                    consecutive_blocks = 0
                 else:
                     print("Max restarts reached. Stopping.")
                     break
-            i += batch_size
+            i += cur_batch_size
             continue
 
         # ── Wait for pages to finish loading ───────────────────────
-        load_wait = random.uniform(5, 10)
+        load_wait = random.uniform(5, 12)
         print(f"   Waiting {load_wait:.0f}s for {len(tab_map)} tabs to load…")
         time.sleep(load_wait)
 
@@ -1927,7 +1984,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                     time.time()).strftime(TIMESTAMP_FORMAT)
                 deal_list[idx]['hd_status'] = hd_status
                 deal_list[idx]['updated_at'] = now
-                print(f"   Tab: {name[:50]} → {hd_status.upper()}")
+                print(f"   Result: {name[:50]} → {hd_status.upper()}")
                 checked += 1
                 batch_checked += 1
 
@@ -1937,67 +1994,54 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
             except Exception as exc:
                 print(f"   Error reading tab for {name[:40]}: {exc}")
 
-        # ── Close all batch tabs ───────────────────────────────────
-        for _, _, tab_handle, _ in tab_map:
-            try:
-                driver.switch_to.window(tab_handle)
-                driver.close()
-            except Exception:
-                pass
+        # ── Close all tabs except main ─────────────────────────────
+        _close_extra_tabs(main_window)
 
-        # Switch back to main tab
-        try:
-            remaining = driver.window_handles
-            if main_window in remaining:
-                driver.switch_to.window(main_window)
-            elif remaining:
-                driver.switch_to.window(remaining[0])
-                main_window = remaining[0]
-        except Exception:
-            pass
+        # ── Save TSV after each batch ──────────────────────────────
+        _save_tsv()
 
-        # Track consecutive batch failures
+        # ── Track consecutive failures ─────────────────────────────
         if batch_checked == 0 or batch_blocked == len(tab_map):
-            consecutive_batch_blocks += 1
+            consecutive_blocks += 1
             print(f"   Batch {batch_num}: all blocked/failed "
-                  f"({consecutive_batch_blocks}/{max_consecutive_batch_blocks})")
-            if consecutive_batch_blocks >= max_consecutive_batch_blocks:
-                print(f"   {max_consecutive_batch_blocks} consecutive batch "
-                      "failures — stopping HD checks.")
-                break
-            # Clear cookies and try to recover
-            try:
-                clear_hd_cookies(driver)
-            except Exception:
-                pass
+                  f"({consecutive_blocks}/{max_consecutive_blocks})")
+            if consecutive_blocks >= max_consecutive_blocks:
+                if restart_count < max_restarts:
+                    restart_count += 1
+                    print(f"   Restarting Chrome "
+                          f"({restart_count}/{max_restarts})...")
+                    driver = restart_driver(driver,
+                                            chrome_profile=chrome_profile,
+                                            profile_dir=profile_dir,
+                                            remote_debug=remote_debug)
+                    warm_up_hd_session(driver, zip_code=zip_code,
+                                       hd_login=hd_login)
+                    main_window = driver.current_window_handle
+                    consecutive_blocks = 0
+                else:
+                    print("Max restarts reached. Stopping HD checks.")
+                    break
+            else:
+                try:
+                    clear_hd_cookies(driver)
+                except Exception:
+                    pass
+                time.sleep(random.uniform(5, 15))
         else:
-            consecutive_batch_blocks = 0
-            # Browse HD homepage on main tab to build trust
+            consecutive_blocks = 0
+            # Browse HD homepage to build trust between batches
             try:
-                driver.switch_to.window(main_window)
                 browse_hd_homepage(driver)
             except Exception:
                 pass
 
-        # Save TSV after each batch
-        with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
-            print(pad_row(FIELDNAMES), file=f_out)
-            for d in deal_list:
-                print(pad_row(d), file=f_out)
-
         # Pause between batches
-        if i + batch_size < len(browser_queue):
-            pause = random.uniform(30, 60)
+        if i + cur_batch_size < len(browser_queue):
+            pause = random.uniform(30, 90)
             print(f"   Pausing {pause:.0f}s before next batch…")
             time.sleep(pause)
 
-        i += batch_size
-
-    # Final TSV save
-    with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
-        print(pad_row(FIELDNAMES), file=f_out)
-        for d in deal_list:
-            print(pad_row(d), file=f_out)
+        i += cur_batch_size
 
     print(f"\nPhase 2 complete: {checked} items checked on HD.")
 
@@ -2037,17 +2081,8 @@ def main():
     parser.add_argument("--recheck", action="store_true",
                         help="Re-check items previously marked as 'blocked' "
                              "or 'error' in Phase 2.")
-    parser.add_argument("--batch-size", type=int, default=None,
-                        help="Number of HD tabs to open simultaneously in "
-                             "Phase 2 batch mode (1-10, default: random).")
 
     args = parser.parse_args()
-
-    # Default batch-size to a random value between 1 and 10
-    if args.batch_size is None:
-        args.batch_size = random.randint(1, 10)
-    elif args.batch_size < 1 or args.batch_size > 10:
-        parser.error("--batch-size must be between 1 and 10")
 
     # Handle opt-out flag
     if args.no_chrome_profile:
@@ -2080,8 +2115,8 @@ def main():
     sys.stdout = _TeeWriter(log_path, sys.__stdout__)
     sys.stderr = _TeeWriter(log_path, sys.__stderr__)
     logging.info("Logging to %s", log_path)
-    logging.info("Settings: phase=%s, batch_size=%d, recheck=%s",
-                 args.phase, args.batch_size, args.recheck)
+    logging.info("Settings: phase=%s, recheck=%s",
+                 args.phase, args.recheck)
 
     if args.output_dir and not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
@@ -2222,8 +2257,7 @@ def main():
             if run_phase2 and hd_driver:
                 print(f"\n{'='*60}")
                 print(f"PHASE 2: HD checks"
-                      f"{' (re-checking blocked/error)' if args.recheck else ''}"
-                      f" [batch_size={args.batch_size}]")
+                      f"{' (re-checking blocked/error)' if args.recheck else ''}")
                 print(f"{'='*60}")
                 check_hd_status_phase(hd_driver, deal_list, tsv_output_path,
                                       chrome_profile=args.chrome_profile,
@@ -2231,8 +2265,7 @@ def main():
                                       remote_debug=args.remote_debug,
                                       zip_code=args.zip,
                                       hd_login=False,
-                                      recheck=args.recheck,
-                                      batch_size=args.batch_size)
+                                      recheck=args.recheck)
             elif run_phase2:
                 print("No HD driver available — skipping Phase 2")
             else:
