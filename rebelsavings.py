@@ -260,6 +260,7 @@ def generate_html_report(deals, output_path):
         .failure {{ color: #95a5a6; font-style: italic; }}
         .out_of_stock {{ color: #7f8c8d; font-weight: bold; font-style: italic; }}
         .blocked {{ color: #c0392b; font-weight: bold; text-decoration: underline; }}
+        .unchecked {{ color: #3498db; font-style: italic; }}
 
         /* FB-specific */
         .sku {{ font-weight: bold; color: #e67e22; }}
@@ -1873,10 +1874,23 @@ def main():
                     if not parts or not parts[0] or parts[0] == "name":
                         skipped += 1
                         continue
-                    # Pad missing fields with empty strings
+                    # Pad missing fields with defaults
                     while len(parts) < len(FIELDNAMES):
                         parts.append("")
                     row_dict = dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)]))
+                    # Fill in defaults for missing/empty fields
+                    if not row_dict.get("price"):
+                        row_dict["price"] = "N/A"
+                    if not row_dict.get("url"):
+                        row_dict["url"] = ""
+                    if not row_dict.get("image"):
+                        row_dict["image"] = ""
+                    if not row_dict.get("hd_status"):
+                        row_dict["hd_status"] = "unchecked"
+                    if not row_dict.get("original_timestamp"):
+                        row_dict["original_timestamp"] = datetime.datetime.now().strftime(TIMESTAMP_FORMAT)
+                    if not row_dict.get("updated_at"):
+                        row_dict["updated_at"] = ""
                     deal_list.append(row_dict)
         except Exception as e:
             print(f"Error reading TSV: {e}")
@@ -2025,8 +2039,16 @@ def main():
                     continue
                 while len(parts) < len(FIELDNAMES):
                     parts.append("")
-                deal_list.append(
-                    dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)])))
+                row_dict = dict(zip(FIELDNAMES, parts[:len(FIELDNAMES)]))
+                if not row_dict.get("price"):
+                    row_dict["price"] = "N/A"
+                if not row_dict.get("hd_status"):
+                    row_dict["hd_status"] = "unchecked"
+                if not row_dict.get("original_timestamp"):
+                    row_dict["original_timestamp"] = ""
+                if not row_dict.get("updated_at"):
+                    row_dict["updated_at"] = ""
+                deal_list.append(row_dict)
     generate_html_report(deal_list, report_path)
     print(f"Report written to {report_path} ({len(deal_list)} items)")
 
