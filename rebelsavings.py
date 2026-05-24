@@ -2071,67 +2071,8 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
     restart_count = 0
     max_restarts = 3
 
-    # ── Pass 1: API checks with block detection + backoff ────────────
-    browser_queue = []  # (idx, deal) pairs that need browser fallback
-    api_consecutive_blocks = 0
-    api_backoff = 2  # seconds, doubles on each consecutive block
-    api_max_backoff = 600  # 10 minutes max
-
-    for pos, (idx, deal) in enumerate(to_check):
-        name = deal['name']
-        hd_url = deal['url']
-        sku = extract_sku_from_url(hd_url)
-        print(f"\n[API {pos + 1}/{len(to_check)}] {name[:60]}")
-
-        api_price, api_status = None, None
-        if sku:
-            api_price, api_status = check_hd_price_api(sku, zip_code=zip_code)
-            if api_status:
-                print(f"   API: ${api_price:.2f} → {api_status.upper()}"
-                      if api_price else f"   API: → {api_status.upper()}")
-
-        # Detect API block — back off exponentially
-        if api_status == HDStatus.BLOCKED:
-            api_consecutive_blocks += 1
-            api_backoff = min(api_backoff * 2, api_max_backoff)
-            print(f"   !!! API BLOCKED ({api_consecutive_blocks}x). "
-                  f"Backing off {api_backoff}s...")
-            time.sleep(api_backoff)
-            browser_queue.append((idx, deal))
-            continue
-
-        if api_status in (HDStatus.PENNY, HDStatus.NOT_PENNY,
-                          HDStatus.CLEARANCE, HDStatus.PENNY_CANDIDATE,
-                          HDStatus.OUT_OF_STOCK):
-            now = datetime.datetime.fromtimestamp(
-                time.time()).strftime(TIMESTAMP_FORMAT)
-            deal_list[idx]['hd_status'] = api_status
-            deal_list[idx]['updated_at'] = now
-            checked += 1
-            api_consecutive_blocks = 0
-            api_backoff = 2  # reset backoff on success
-            # Save every 10 API successes
-            if checked % 10 == 0:
-                with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
-                    print(pad_row(FIELDNAMES), file=f_out)
-                    for d in deal_list:
-                        print(pad_row(d), file=f_out)
-            time.sleep(random.uniform(1, 3))
-        else:
-            # API returned None — product may not exist or needs browser
-            api_consecutive_blocks = 0
-            api_backoff = 2
-            browser_queue.append((idx, deal))
-            time.sleep(random.uniform(0.5, 1.5))
-
-    # Save after API pass
-    if checked > 0:
-        with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
-            print(pad_row(FIELDNAMES), file=f_out)
-            for d in deal_list:
-                print(pad_row(d), file=f_out)
-    print(f"\nAPI pass done: {checked} checked, "
-          f"{len(browser_queue)} need browser.")
+    # All items go straight to browser (API is always blocked by Akamai)
+    browser_queue = list(to_check)
 
     # ── Pass 2: Browser batch checks (random batch size 1-10) ───────
     if not browser_queue:
@@ -2279,40 +2220,14 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         # ── Save TSV after each batch ──────────────────────────────
         _save_tsv()
 
-        # ── Track consecutive failures + exponential cooldown ──────
+        # ── Track consecutive failures ─────────────────────────────
         if batch_checked == 0 or batch_blocked == len(tab_map):
             consecutive_blocks += 1
-            # Exponential cooldown: 2min, 5min, 10min, 20min, 30min...
-            cooldown = min(120 * (2 ** (consecutive_blocks - 1)), 1800)
             print(f"   Batch {batch_num}: all blocked/failed "
-                  f"({consecutive_blocks}x). "
-                  f"Cooling down {cooldown/60:.0f}min...")
-
-            try:
-                clear_hd_cookies(driver)
-            except Exception:
-                pass
-
-            # On 3rd consecutive block, also restart Chrome
-            if consecutive_blocks >= 3 and restart_count < max_restarts:
-                restart_count += 1
-                print(f"   Restarting Chrome "
-                      f"({restart_count}/{max_restarts})...")
-                driver = restart_driver(driver,
-                                        chrome_profile=chrome_profile,
-                                        profile_dir=profile_dir,
-                                        remote_debug=remote_debug)
-                warm_up_hd_session(driver, zip_code=zip_code,
-                                   hd_login=hd_login)
-                main_window = driver.current_window_handle
-
-            # If we've been blocked 6+ times in a row, give up
-            if consecutive_blocks >= 6:
-                print("   Too many consecutive blocks. "
-                      "Stopping browser checks.")
+                  f"({consecutive_blocks}/3)")
+            if consecutive_blocks >= 3:
+                print("   3 consecutive blocked batches. Stopping.")
                 break
-
-            time.sleep(cooldown)
         else:
             consecutive_blocks = 0
             # Browse HD homepage to build trust between batches
