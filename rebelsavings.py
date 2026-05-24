@@ -38,6 +38,68 @@ DEFAULT_REMOTE_DEBUG = "localhost:9222"
 DEBUG_USER_DATA_DIR = "/Users/shengh4/Library/Application Support/Google/Chrome-Debug"
 
 
+def simulate_human_behavior(driver, duration=None):
+    """Generate realistic mouse movements, scrolls, and pauses to feed
+    Akamai's sensor script with human-like interaction data.
+
+    *duration* controls roughly how long to interact (default 3-8s).
+    Uses JavaScript-dispatched mouse events so they register with
+    Akamai's sensor regardless of ActionChains quirks.
+    """
+    if duration is None:
+        duration = random.uniform(3, 8)
+
+    start = time.time()
+
+    try:
+        vw = driver.execute_script("return window.innerWidth;") or 1920
+        vh = driver.execute_script("return window.innerHeight;") or 1080
+    except Exception:
+        vw, vh = 1920, 1080
+
+    # Current simulated mouse position
+    mx, my = vw // 2, vh // 2
+
+    while time.time() - start < duration:
+        action = random.choice(["move", "move", "scroll", "pause"])
+
+        if action == "move":
+            # Move mouse in small steps to a new random position
+            # (Akamai tracks mousemove event frequency and trajectory)
+            tx = random.randint(100, vw - 100)
+            ty = random.randint(100, vh - 100)
+            steps = random.randint(3, 8)
+            dx = (tx - mx) / steps
+            dy = (ty - my) / steps
+            for _ in range(steps):
+                mx = int(mx + dx + random.uniform(-5, 5))
+                my = int(my + dy + random.uniform(-5, 5))
+                mx = max(0, min(mx, vw))
+                my = max(0, min(my, vh))
+                try:
+                    driver.execute_script(
+                        "document.elementFromPoint(arguments[0], arguments[1])"
+                        "?.dispatchEvent(new MouseEvent('mousemove', "
+                        "{clientX: arguments[0], clientY: arguments[1], "
+                        "bubbles: true}));", mx, my)
+                except Exception:
+                    pass
+                time.sleep(random.uniform(0.02, 0.08))
+            time.sleep(random.uniform(0.1, 0.4))
+
+        elif action == "scroll":
+            direction = random.choice([1, 1, 1, -1])
+            amount = direction * random.randint(100, 400)
+            try:
+                driver.execute_script(f"window.scrollBy(0, {amount});")
+            except Exception:
+                pass
+            time.sleep(random.uniform(0.3, 1.0))
+
+        elif action == "pause":
+            time.sleep(random.uniform(0.5, 2.0))
+
+
 def human_click(driver, element):
     """
     Robust clicker for Selenium 4.9.
@@ -946,11 +1008,21 @@ def navigate_to_hd_product(driver, hd_url, name=''):
 
 def browse_hd_homepage(driver):
     """
-    Navigate back to HD homepage and simulate brief browsing.
-    Builds Akamai sensor trust between product checks.
+    Navigate to HD homepage and simulate realistic browsing.
+    Feeds Akamai's sensor script with human-like interaction data
+    (mouse movements, scrolls, pauses) to build trust.
     """
     try:
-        driver.get("https://www.homedepot.com")
+        # Pick a random HD page to visit (not always homepage)
+        pages = [
+            "https://www.homedepot.com",
+            "https://www.homedepot.com/b/Tools/N-5yc1vZc1xy",
+            "https://www.homedepot.com/b/Outdoors/N-5yc1vZbx3j",
+            "https://www.homedepot.com/b/Hardware/N-5yc1vZc21m",
+            "https://www.homedepot.com/b/Appliances/N-5yc1vZbv09",
+        ]
+        url = random.choice(pages)
+        driver.get(url)
         time.sleep(random.uniform(3, 5))
 
         if is_hd_blocked(driver):
@@ -959,11 +1031,8 @@ def browse_hd_homepage(driver):
             driver.get("https://www.homedepot.com")
             time.sleep(random.uniform(3, 5))
 
-        # Simulate browsing
-        driver.execute_script("window.scrollBy(0, %d);" % random.randint(200, 500))
-        time.sleep(random.uniform(1, 3))
-        driver.execute_script("window.scrollBy(0, %d);" % random.randint(-300, -100))
-        time.sleep(random.uniform(1, 2))
+        # Simulate realistic browsing with mouse + scroll
+        simulate_human_behavior(driver, duration=random.uniform(5, 15))
     except Exception:
         pass
 
@@ -972,8 +1041,15 @@ def check_hd_item_tab_status(driver, name=''):
     """
     Analyzes the CURRENT active tab (Home Depot) to determine status.
     Does NOT perform navigation (driver.get).
+    Simulates human browsing before reading the page to feed Akamai's
+    sensor script with interaction data.
     """
     print(f"   > Verifying: {name[:25]}...")
+
+    # Simulate human browsing the product page before checking anything.
+    # This feeds Akamai's sensor with mouse/scroll data so it doesn't
+    # flag the session as bot-like.
+    simulate_human_behavior(driver, duration=random.uniform(3, 6))
 
     # --- Stage 0: Immediate Block/Error Check ---
     if "Access Denied" in driver.title:
@@ -1453,12 +1529,14 @@ def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP, hd_login=False):
     except Exception as e:
         print(f"   > ZIP setup failed (non-fatal): {e}")
 
-    # Simulate brief browsing to build sensor data
-    print("   > Simulating browsing behavior...")
-    driver.execute_script("window.scrollBy(0, 400);")
-    time.sleep(random.uniform(1, 2))
-    driver.execute_script("window.scrollBy(0, -200);")
-    time.sleep(random.uniform(1, 2))
+    # Build Akamai sensor trust with realistic browsing behavior.
+    # This is critical — the sensor collects mouse/scroll/timing data
+    # and flags sessions with no human interaction as bots.
+    print("   > Building sensor trust (browsing HD)...")
+    simulate_human_behavior(driver, duration=random.uniform(8, 15))
+
+    # Visit a category page to establish browsing pattern
+    browse_hd_homepage(driver)
 
     print("   > HD session warm-up complete.")
     return True
