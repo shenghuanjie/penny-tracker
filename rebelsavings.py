@@ -198,23 +198,50 @@ def generate_html_report(deals, output_path):
     Includes a second tab for Facebook group deals if fb_deals.tsv exists."""
     print(f"Generating HTML report with {len(deals)} items → {output_path}")
 
-    # --- SORTING LOGIC ---
+    # --- DEFAULT SORT ---
+    # Primary: penny & OOS first (by latest updated_at desc),
+    # then blocked/failed, clearance, everything else
     status_priority = {
         'penny': 0,
-        'penny_candidate': 1,
-        'out_of_stock': 2,
-        'clearance': 3,
-        'not_penny': 4,
-        'blocked': 5,
-        'error': 6,
-        'failure': 7,
-        'unchecked': 8
+        'out_of_stock': 1,
+        'blocked': 2,
+        'failure': 3,
+        'error': 4,
+        'clearance': 5,
+        'penny_candidate': 6,
+        'not_penny': 7,
+        'unchecked': 8,
     }
 
-    deals.sort(key=lambda d: (
-        status_priority.get(d.get('hd_status'), 99),
-        d.get('original_timestamp', '')
-    ))
+    def _sort_key(d):
+        s = d.get('hd_status', '') or 'unchecked'
+        pri = status_priority.get(s, 99)
+        # Within same priority, sort by updated_at descending (newest first)
+        updated = d.get('updated_at', '') or ''
+        # Invert for descending: use a large string minus the timestamp
+        return (pri, updated == '', updated)
+
+    deals_sorted = sorted(deals, key=_sort_key)
+    # Reverse updated_at within each priority group (newest first)
+    # We do this by sorting with a tuple that puts newest first
+    def _sort_key_final(d):
+        s = d.get('hd_status', '') or 'unchecked'
+        pri = status_priority.get(s, 99)
+        updated = d.get('updated_at', '') or '0000'
+        # Negate by using reverse string trick — just use negative approach
+        return (pri, updated)
+
+    # Sort: priority asc, then updated_at desc within each group
+    from itertools import groupby
+    final_order = []
+    deals_sorted = sorted(deals, key=lambda d: status_priority.get(
+        d.get('hd_status', '') or 'unchecked', 99))
+    for _, group in groupby(deals_sorted, key=lambda d: status_priority.get(
+            d.get('hd_status', '') or 'unchecked', 99)):
+        group_list = list(group)
+        group_list.sort(key=lambda d: d.get('updated_at', '') or '', reverse=True)
+        final_order.extend(group_list)
+    deals = final_order
 
     # Load FB deals
     output_dir = os.path.dirname(output_path) or "."
@@ -223,97 +250,107 @@ def generate_html_report(deals, output_path):
 
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    html = f"""
-    <html><head><style>
-        body {{ font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }}
-        h2 {{ color: #333; margin-bottom: 5px; }}
-
-        /* Tabs */
-        .tabs {{ display: flex; gap: 0; margin-bottom: 0; }}
-        .tab {{ padding: 12px 24px; cursor: pointer; border: 1px solid #ddd;
-                border-bottom: none; border-radius: 8px 8px 0 0; background: #e8e8e8;
-                font-weight: bold; font-size: 15px; color: #555; user-select: none; }}
-        .tab:hover {{ background: #f5f5f5; }}
-        .tab.active {{ background: white; color: #333; border-bottom: 2px solid white;
-                       margin-bottom: -1px; position: relative; z-index: 1; }}
-        .tab.hd.active {{ color: #f96302; }}
-        .tab.fb.active {{ color: #1877f2; }}
-        .tab-content {{ display: none; border: 1px solid #ddd; border-radius: 0 8px 8px 8px;
-                        background: white; padding: 0; }}
-        .tab-content.active {{ display: block; }}
-
-        /* Tables */
-        table {{ width: 100%; border-collapse: collapse; background: white; }}
-        th, td {{ padding: 12px; border: 1px solid #eee; text-align: left; vertical-align: middle; }}
-        th {{ color: white; font-weight: bold; position: sticky; top: 0; }}
-        .hd-table th {{ background: #f96302; }}
-        .fb-table th {{ background: #1877f2; }}
-        tr:nth-child(even) {{ background-color: #f9f9f9; }}
-        img {{ width: 70px; height: auto; border-radius: 4px; object-fit: cover; }}
-
-        /* Status Colors */
-        .penny {{ color: #3498db; font-weight: bold; }}
-        .not_penny {{ color: #e74c3c; font-weight: bold; }}
-        .penny_candidate {{ color: #f39c12; font-weight: bold; }}
-        .clearance {{ color: #2ecc71; font-weight: bold; }}
-        .error {{ color: #8e44ad; font-weight: bold; }}
-        .failure {{ color: #95a5a6; font-style: italic; }}
-        .out_of_stock {{ color: #7f8c8d; font-weight: bold; font-style: italic; }}
-        .blocked {{ color: #c0392b; font-weight: bold; text-decoration: underline; }}
-        .unchecked {{ color: #3498db; font-style: italic; }}
-
-        /* FB-specific */
-        .sku {{ font-weight: bold; color: #e67e22; }}
-        .upc {{ font-weight: bold; color: #27ae60; }}
-        .snippet {{ max-width: 300px; overflow: hidden; text-overflow: ellipsis;
-                    white-space: nowrap; font-size: 13px; color: #555; }}
-        .date {{ white-space: nowrap; color: #888; }}
-        .fb-img {{ max-width: 120px; max-height: 90px; }}
-        a {{ color: #1877f2; text-decoration: none; }}
-        a:hover {{ text-decoration: underline; }}
-        .meta {{ color: #888; font-size: 13px; margin: 4px 0 12px 0; }}
-
-    </style></head><body>
-        <h2>Penny Deal Tracker</h2>
-        <p class="meta">Updated: {now_str}</p>
-
-        <div class="tabs">
-            <div class="tab hd active" onclick="switchTab('hd')">RebelSavings ({len(deals)})</div>
-            {'<div class="tab fb" onclick="switchTab(\'fb\')">Facebook Group (' + str(len(fb_deals)) + ')</div>' if has_fb else ''}
-        </div>
-
-        <!-- RebelSavings Tab -->
-        <div id="tab-hd" class="tab-content active">
-        <table class="hd-table"><tr><th>Image</th><th>Name</th><th>Price</th><th>Status</th><th>Updated At</th><th>Link</th></tr>"""
-
-    for d in deals:
-        status = d.get('hd_status', 'unchecked')
-        if not status: status = 'unchecked'
-
+    # --- Build rows with sort index ---
+    rows_html = ""
+    for idx, d in enumerate(deals):
+        status = d.get('hd_status', 'unchecked') or 'unchecked'
         image_src = d.get('image', '')
         name = d.get('name', 'Unknown')
         price = d.get('price', 'N/A')
         url = d.get('url', '#')
-        timestamp = d.get('updated_at', '') or d.get('original_timestamp', '')
+        updated = d.get('updated_at', '')
+        added = d.get('original_timestamp', '')
 
-        html += f"""<tr>
-            <td><img src="{image_src}"></td>
+        rows_html += f"""<tr data-idx="{idx}">
+            <td><img src="{image_src}" loading="lazy"></td>
             <td>{name}</td>
             <td>{price}</td>
             <td class="{status}">{status.upper()}</td>
-            <td>{timestamp}</td>
+            <td>{updated}</td>
+            <td>{added}</td>
             <td><a href="{url}" target="_blank">Link</a></td>
         </tr>"""
 
-    html += "</table></div>"
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Penny Deal Tracker</title>
+<style>
+    body {{ font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }}
+    h2 {{ color: #333; margin-bottom: 5px; }}
+    .tabs {{ display: flex; gap: 0; margin-bottom: 0; }}
+    .tab {{ padding: 12px 24px; cursor: pointer; border: 1px solid #ddd;
+            border-bottom: none; border-radius: 8px 8px 0 0; background: #e8e8e8;
+            font-weight: bold; font-size: 15px; color: #555; user-select: none; }}
+    .tab:hover {{ background: #f5f5f5; }}
+    .tab.active {{ background: white; color: #333; border-bottom: 2px solid white;
+                   margin-bottom: -1px; position: relative; z-index: 1; }}
+    .tab.hd.active {{ color: #f96302; }}
+    .tab.fb.active {{ color: #1877f2; }}
+    .tab-content {{ display: none; border: 1px solid #ddd; border-radius: 0 8px 8px 8px;
+                    background: white; padding: 0; }}
+    .tab-content.active {{ display: block; }}
+    table {{ width: 100%; border-collapse: collapse; background: white; }}
+    th, td {{ padding: 10px 12px; border: 1px solid #eee; text-align: left; vertical-align: middle; }}
+    th {{ color: white; font-weight: bold; position: sticky; top: 0; z-index: 2; }}
+    .hd-table th {{ background: #f96302; cursor: pointer; user-select: none; }}
+    .hd-table th:hover {{ background: #e05800; }}
+    .hd-table th .arrow {{ font-size: 10px; margin-left: 4px; }}
+    .fb-table th {{ background: #1877f2; }}
+    tr:nth-child(even) {{ background-color: #f9f9f9; }}
+    img {{ width: 70px; height: auto; border-radius: 4px; object-fit: cover; }}
+    .penny {{ color: #3498db; font-weight: bold; }}
+    .not_penny {{ color: #e74c3c; font-weight: bold; }}
+    .penny_candidate {{ color: #f39c12; font-weight: bold; }}
+    .clearance {{ color: #2ecc71; font-weight: bold; }}
+    .error {{ color: #8e44ad; font-weight: bold; }}
+    .failure {{ color: #95a5a6; font-style: italic; }}
+    .out_of_stock {{ color: #7f8c8d; font-weight: bold; font-style: italic; }}
+    .blocked {{ color: #c0392b; font-weight: bold; text-decoration: underline; }}
+    .unchecked {{ color: #3498db; font-style: italic; }}
+    .sku {{ font-weight: bold; color: #e67e22; }}
+    .upc {{ font-weight: bold; color: #27ae60; }}
+    .snippet {{ max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; font-size: 13px; color: #555; }}
+    .date {{ white-space: nowrap; color: #888; }}
+    .fb-img {{ max-width: 120px; max-height: 90px; }}
+    a {{ color: #1877f2; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .meta {{ color: #888; font-size: 13px; margin: 4px 0 12px 0; }}
+    .reset-btn {{ background: #f96302; color: white; border: none; padding: 6px 14px;
+                  border-radius: 4px; cursor: pointer; font-size: 13px; margin-left: 12px; }}
+    .reset-btn:hover {{ background: #e05800; }}
+</style>
+</head><body>
+    <h2>Penny Deal Tracker</h2>
+    <p class="meta">Updated: {now_str}
+        <button class="reset-btn" onclick="resetSort()">Reset Sort</button>
+    </p>
+
+    <div class="tabs">
+        <div class="tab hd active" onclick="switchTab('hd')">RebelSavings ({len(deals)})</div>
+        {('<div class="tab fb" onclick="switchTab(&#39;fb&#39;)">Facebook Group (' + str(len(fb_deals)) + ')</div>') if has_fb else ''}
+    </div>
+
+    <div id="tab-hd" class="tab-content active">
+    <table class="hd-table" id="hd-table">
+    <thead><tr>
+        <th>Image</th>
+        <th onclick="sortTable(1)">Name <span class="arrow"></span></th>
+        <th onclick="sortTable(2)">Price <span class="arrow"></span></th>
+        <th onclick="sortTable(3)">Status <span class="arrow"></span></th>
+        <th onclick="sortTable(4)">Updated <span class="arrow"></span></th>
+        <th onclick="sortTable(5)">Added <span class="arrow"></span></th>
+        <th>Link</th>
+    </tr></thead>
+    <tbody>
+    {rows_html}
+    </tbody>
+    </table>
+    </div>"""
 
     # --- Facebook Tab ---
     if has_fb:
-        html += """
-        <div id="tab-fb" class="tab-content">
-        <table class="fb-table"><tr><th>Image</th><th>SKU</th><th>UPC</th><th>HD Link</th>
-            <th>Post Snippet</th><th>Date</th></tr>"""
-
+        fb_rows = ""
         for deal in fb_deals:
             images = deal.get("images", "").split(",")
             img_html = ""
@@ -346,30 +383,100 @@ def generate_html_report(deals, output_path):
                         link_html += f'<a href="{link}" target="_blank">View</a><br>'
 
             snippet = deal.get("text_snippet", "")
-            date = deal.get("post_date", "")
+            date_val = deal.get("post_date", "")
 
-            html += f"""<tr>
+            fb_rows += f"""<tr>
                 <td>{img_html}</td>
                 <td>{sku_html or '—'}</td>
                 <td>{upc_html or '—'}</td>
                 <td>{link_html or '—'}</td>
                 <td class="snippet" title="{snippet}">{snippet[:100]}</td>
-                <td class="date">{date}</td>
+                <td class="date">{date_val}</td>
             </tr>"""
 
-        html += "</table></div>"
+        html += f"""
+    <div id="tab-fb" class="tab-content">
+    <table class="fb-table"><tr><th>Image</th><th>SKU</th><th>UPC</th><th>HD Link</th>
+        <th>Post Snippet</th><th>Date</th></tr>
+    {fb_rows}
+    </table></div>"""
 
-    # --- Tab switching JS ---
+    # --- JavaScript: tab switching + column sorting ---
     html += """
-    <script>
-    function switchTab(tab) {
-        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-        document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-        document.getElementById('tab-' + tab).classList.add('active');
-        document.querySelector('.tab.' + tab).classList.add('active');
+<script>
+function switchTab(tab) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    document.querySelector('.tab.' + tab).classList.add('active');
+}
+
+// Column sorting state
+let currentSortCol = -1;
+let currentSortDir = 0; // 0=default, 1=asc, 2=desc
+
+function sortTable(col) {
+    const table = document.getElementById('hd-table');
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const headers = table.querySelectorAll('thead th');
+
+    // Cycle: default → asc → desc → default
+    if (currentSortCol === col) {
+        currentSortDir = (currentSortDir + 1) % 3;
+    } else {
+        currentSortCol = col;
+        currentSortDir = 1; // start with asc
     }
-    </script>
-    </body></html>"""
+
+    // Clear all arrows
+    headers.forEach(th => {
+        const arrow = th.querySelector('.arrow');
+        if (arrow) arrow.textContent = '';
+    });
+
+    if (currentSortDir === 0) {
+        // Reset to default order
+        rows.sort((a, b) => parseInt(a.dataset.idx) - parseInt(b.dataset.idx));
+        currentSortCol = -1;
+    } else {
+        const arrow = headers[col].querySelector('.arrow');
+        if (arrow) arrow.textContent = currentSortDir === 1 ? ' ▲' : ' ▼';
+
+        rows.sort((a, b) => {
+            let A = a.cells[col].textContent.trim();
+            let B = b.cells[col].textContent.trim();
+            // Try numeric comparison for price
+            let nA = parseFloat(A.replace(/[^0-9.-]/g, ''));
+            let nB = parseFloat(B.replace(/[^0-9.-]/g, ''));
+            if (!isNaN(nA) && !isNaN(nB)) {
+                return currentSortDir === 1 ? nA - nB : nB - nA;
+            }
+            // String comparison
+            let cmp = A.localeCompare(B, undefined, {numeric: true, sensitivity: 'base'});
+            return currentSortDir === 1 ? cmp : -cmp;
+        });
+    }
+
+    rows.forEach(r => tbody.appendChild(r));
+}
+
+function resetSort() {
+    currentSortCol = -1;
+    currentSortDir = 0;
+    const table = document.getElementById('hd-table');
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const headers = table.querySelectorAll('thead th');
+    headers.forEach(th => {
+        const arrow = th.querySelector('.arrow');
+        if (arrow) arrow.textContent = '';
+    });
+    rows.sort((a, b) => parseInt(a.dataset.idx) - parseInt(b.dataset.idx));
+    rows.forEach(r => tbody.appendChild(r));
+}
+</script>
+</body></html>"""
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -1655,7 +1762,10 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                 if items_collected >= max_items:
                     break
                 try:
-                    # Check "Added" date
+                    # Check "Added" date — this is when RebelSavings
+                    # first recorded the item.  We use it as
+                    # original_timestamp (day resolution).
+                    added_date = None
                     tds = row.find_elements(By.TAG_NAME, "td")
                     for td in tds:
                         td_text = td.text.strip()
@@ -1737,9 +1847,15 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
 
                     now = datetime.datetime.fromtimestamp(
                         time.time()).strftime(TIMESTAMP_FORMAT)
+                    # Use the RebelSavings "Added" date as original_timestamp
+                    # (day resolution).  Fall back to current time if not found.
+                    if added_date:
+                        orig_ts = added_date.strftime(TIMESTAMP_FORMAT)
+                    else:
+                        orig_ts = now
                     current_deal = {
                         "name": name, "price": price, "url": hd_url,
-                        "image": img_url, "original_timestamp": now,
+                        "image": img_url, "original_timestamp": orig_ts,
                         "hd_status": hd_status, "updated_at": now,
                         "padding": ""
                     }
@@ -2224,24 +2340,49 @@ def main():
     if args.mode in [RunningMode.CLEAN] and deal_list:
         new_deal_list = []
         seen_ids = set()
+        now_ts = datetime.datetime.fromtimestamp(
+            time.time()).strftime(TIMESTAMP_FORMAT)
+        removed_old = 0
+        removed_penny_old = 0
+        removed_dup = 0
         for deal_row in deal_list:
-            org_timestamp = deal_row["original_timestamp"]
-            timestamp = datetime.datetime.fromtimestamp(time.time()).strftime(TIMESTAMP_FORMAT)
-            if org_timestamp is None or is_within_x_days(org_timestamp, timestamp, days=60):
-                if deal_row["name"] not in seen_ids:
-                    seen_ids.add(deal_row["name"])
-                    new_deal_list.append(deal_row)
-                else:
-                    pass
+            org_timestamp = deal_row.get("original_timestamp", "")
+            status = deal_row.get("hd_status", "")
 
-        if len(new_deal_list) != len(deal_list):
-            print(f"Cleaned {len(deal_list) - len(new_deal_list)} old or duplicated items.")
+            # Remove penny items older than 30 days
+            if status == HDStatus.PENNY and org_timestamp:
+                if not is_within_x_days(org_timestamp, now_ts, days=30):
+                    removed_penny_old += 1
+                    continue
+
+            # Remove all items older than 60 days
+            if org_timestamp and not is_within_x_days(
+                    org_timestamp, now_ts, days=60):
+                removed_old += 1
+                continue
+
+            # Deduplicate by name
+            name = deal_row.get("name", "")
+            if name in seen_ids:
+                removed_dup += 1
+                continue
+            seen_ids.add(name)
+            new_deal_list.append(deal_row)
+
+        total_removed = removed_old + removed_penny_old + removed_dup
+        if total_removed > 0:
+            print(f"Cleaned {total_removed} items: "
+                  f"{removed_penny_old} penny >30d, "
+                  f"{removed_old} other >60d, "
+                  f"{removed_dup} duplicates.")
             shutil.copyfile(args.from_tsv, backuptsv_output_path)
-            deal_list = new_deal_list  # Update memory
+            deal_list = new_deal_list
             with open(tsv_output_path, 'w', encoding="utf-8") as fp:
                 print(pad_row(FIELDNAMES), file=fp)
                 for deal_row in new_deal_list:
                     print(pad_row(deal_row), file=fp)
+        else:
+            print("Nothing to clean.")
 
     # --- SEARCH AND CHECK (TWO-PHASE) ---
     if args.mode in [RunningMode.SEARCH, RunningMode.ALL]:
