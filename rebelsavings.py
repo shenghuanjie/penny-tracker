@@ -523,43 +523,80 @@ def extract_sku_from_url(hd_url):
     return None
 
 
-def check_hd_price_api(sku, zip_code=DEFAULT_ZIP):
-    """Check HD product price via their public API. No browser needed.
-    Returns (price_float, status_string) or (None, None) on failure."""
+_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/18.3 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) "
+    "Gecko/20100101 Firefox/138.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+]
+
+# Nearest store IDs to try (rotated per request for variety)
+_STORE_IDS = ["6636", "0629", "0658", "6604", "6673"]
+
+
+def check_hd_price_api(sku, zip_code=DEFAULT_ZIP, store_id=None):
+    """Check HD product price via their GraphQL API. No browser needed.
+
+    Returns (price_float, status_string) or (None, None) on failure.
+    Returns (None, 'blocked') if the API returns 403/429 (IP blocked).
+    """
+    if store_id is None:
+        store_id = random.choice(_STORE_IDS)
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/138.0.0.0 Safari/537.36",
+        "User-Agent": random.choice(_USER_AGENTS),
         "Accept": "application/json",
+        "Content-Type": "application/json",
         "x-experience-name": "general-merchandise",
         "x-current-url": f"/p/product/{sku}",
+        "x-hd-dc": "origin",
+        "Origin": "https://www.homedepot.com",
+        "Referer": f"https://www.homedepot.com/p/product/{sku}",
     }
-    # HD's product API endpoint
-    api_url = (f"https://www.homedepot.com/federation-gateway/graphql"
-               f"?opname=productClientOnlyProduct")
+    api_url = ("https://www.homedepot.com/federation-gateway/graphql"
+               "?opname=productClientOnlyProduct")
     payload = {
         "operationName": "productClientOnlyProduct",
         "variables": {
             "itemId": sku,
-            "storeId": "",
+            "storeId": store_id,
             "zipCode": zip_code,
         },
         "query": """query productClientOnlyProduct($itemId: String!, $storeId: String!, $zipCode: String!) {
             product(itemId: $itemId) {
-                identifiers { itemId productLabel }
+                identifiers { itemId productLabel canonicalUrl }
                 pricing(storeId: $storeId) {
                     value originalPrice specialPrice
                     promotion { dollarOff percentageOff }
+                    message
                 }
-                availabilityType { type discontinued }
-                info { globalCustomConfigurator { customExperience } }
+                availabilityType { type discontinued buyable }
+                fulfillment(storeId: $storeId, zipCode: $zipCode) {
+                    fulfillmentOptions { type services { type } }
+                }
             }
         }"""
     }
     try:
         resp = requests.post(api_url, json=payload, headers=headers, timeout=15)
+
+        # Detect IP-level blocks
+        if resp.status_code in (403, 429):
+            return None, HDStatus.BLOCKED
         if resp.status_code != 200:
             return None, None
+
+        # Check for Akamai block page in response body
+        text = resp.text
+        if "Access Denied" in text or "Reference #" in text:
+            return None, HDStatus.BLOCKED
+
         data = resp.json()
         product = data.get("data", {}).get("product")
         if not product:
@@ -1956,8 +1993,12 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
     restart_count = 0
     max_restarts = 3
 
-    # ── Pass 1: API checks (fast, no browser) ──────────────────────
+    # ── Pass 1: API checks with block detection + backoff ────────────
     browser_queue = []  # (idx, deal) pairs that need browser fallback
+    api_consecutive_blocks = 0
+    api_backoff = 2  # seconds, doubles on each consecutive block
+    api_max_backoff = 600  # 10 minutes max
+
     for pos, (idx, deal) in enumerate(to_check):
         name = deal['name']
         hd_url = deal['url']
@@ -1971,22 +2012,39 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 print(f"   API: ${api_price:.2f} → {api_status.upper()}"
                       if api_price else f"   API: → {api_status.upper()}")
 
+        # Detect API block — back off exponentially
+        if api_status == HDStatus.BLOCKED:
+            api_consecutive_blocks += 1
+            api_backoff = min(api_backoff * 2, api_max_backoff)
+            print(f"   !!! API BLOCKED ({api_consecutive_blocks}x). "
+                  f"Backing off {api_backoff}s...")
+            time.sleep(api_backoff)
+            browser_queue.append((idx, deal))
+            continue
+
         if api_status in (HDStatus.PENNY, HDStatus.NOT_PENNY,
-                          HDStatus.CLEARANCE, HDStatus.PENNY_CANDIDATE):
+                          HDStatus.CLEARANCE, HDStatus.PENNY_CANDIDATE,
+                          HDStatus.OUT_OF_STOCK):
             now = datetime.datetime.fromtimestamp(
                 time.time()).strftime(TIMESTAMP_FORMAT)
             deal_list[idx]['hd_status'] = api_status
             deal_list[idx]['updated_at'] = now
             checked += 1
+            api_consecutive_blocks = 0
+            api_backoff = 2  # reset backoff on success
             # Save every 10 API successes
             if checked % 10 == 0:
                 with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
                     print(pad_row(FIELDNAMES), file=f_out)
                     for d in deal_list:
                         print(pad_row(d), file=f_out)
-            time.sleep(random.uniform(0.5, 1.5))
+            time.sleep(random.uniform(1, 3))
         else:
+            # API returned None — product may not exist or needs browser
+            api_consecutive_blocks = 0
+            api_backoff = 2
             browser_queue.append((idx, deal))
+            time.sleep(random.uniform(0.5, 1.5))
 
     # Save after API pass
     if checked > 0:
@@ -2143,32 +2201,40 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         # ── Save TSV after each batch ──────────────────────────────
         _save_tsv()
 
-        # ── Track consecutive failures ─────────────────────────────
+        # ── Track consecutive failures + exponential cooldown ──────
         if batch_checked == 0 or batch_blocked == len(tab_map):
             consecutive_blocks += 1
+            # Exponential cooldown: 2min, 5min, 10min, 20min, 30min...
+            cooldown = min(120 * (2 ** (consecutive_blocks - 1)), 1800)
             print(f"   Batch {batch_num}: all blocked/failed "
-                  f"({consecutive_blocks}/{max_consecutive_blocks})")
-            if consecutive_blocks >= max_consecutive_blocks:
-                if restart_count < max_restarts:
-                    restart_count += 1
-                    print(f"   Restarting Chrome "
-                          f"({restart_count}/{max_restarts})...")
-                    driver = restart_driver(driver,
-                                            chrome_profile=chrome_profile,
-                                            profile_dir=profile_dir,
-                                            remote_debug=remote_debug)
-                    warm_up_hd_session(driver, zip_code=zip_code,
-                                       hd_login=hd_login)
-                    main_window = driver.current_window_handle
-                    consecutive_blocks = 0
-                else:
-                    print("Max restarts reached. Stopping HD checks.")
-                    break
-            else:
-                try:
-                    clear_hd_cookies(driver)
-                except Exception:
-                    pass
+                  f"({consecutive_blocks}x). "
+                  f"Cooling down {cooldown/60:.0f}min...")
+
+            try:
+                clear_hd_cookies(driver)
+            except Exception:
+                pass
+
+            # On 3rd consecutive block, also restart Chrome
+            if consecutive_blocks >= 3 and restart_count < max_restarts:
+                restart_count += 1
+                print(f"   Restarting Chrome "
+                      f"({restart_count}/{max_restarts})...")
+                driver = restart_driver(driver,
+                                        chrome_profile=chrome_profile,
+                                        profile_dir=profile_dir,
+                                        remote_debug=remote_debug)
+                warm_up_hd_session(driver, zip_code=zip_code,
+                                   hd_login=hd_login)
+                main_window = driver.current_window_handle
+
+            # If we've been blocked 6+ times in a row, give up
+            if consecutive_blocks >= 6:
+                print("   Too many consecutive blocks. "
+                      "Stopping browser checks.")
+                break
+
+            time.sleep(cooldown)
         else:
             consecutive_blocks = 0
             # Browse HD homepage to build trust between batches
@@ -2180,17 +2246,21 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         i += cur_batch_size
 
         # ── Time-distributed pause ─────────────────────────────────
-        # Calculate how long to sleep so remaining items fill remaining time
         items_left_after = len(browser_queue) - i
         if items_left_after <= 0:
             break
 
         elapsed_total = time.time() - phase2_start
         remaining_time = max(total_seconds - elapsed_total, 0)
+
+        if remaining_time <= 0:
+            print("   Time window exhausted. Stopping.")
+            break
+
         target_interval = remaining_time / items_left_after
-        # Add ±30% jitter so it's not perfectly uniform
+        # Add ±30% jitter
         jitter = target_interval * random.uniform(-0.3, 0.3)
-        pause = max(target_interval + jitter, 15)  # at least 15s
+        pause = max(target_interval + jitter, 15)
 
         # Account for time already spent on this batch
         batch_elapsed = time.time() - batch_start
