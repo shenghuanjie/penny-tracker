@@ -2220,40 +2220,14 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         # ── Save TSV after each batch ──────────────────────────────
         _save_tsv()
 
-        # ── Track consecutive failures + exponential cooldown ──────
+        # ── Track consecutive failures ─────────────────────────────
         if batch_checked == 0 or batch_blocked == len(tab_map):
             consecutive_blocks += 1
-            # Exponential cooldown: 2min, 5min, 10min, 20min, 30min...
-            cooldown = min(120 * (2 ** (consecutive_blocks - 1)), 1800)
             print(f"   Batch {batch_num}: all blocked/failed "
-                  f"({consecutive_blocks}x). "
-                  f"Cooling down {cooldown/60:.0f}min...")
-
-            try:
-                clear_hd_cookies(driver)
-            except Exception:
-                pass
-
-            # On 3rd consecutive block, also restart Chrome
-            if consecutive_blocks >= 3 and restart_count < max_restarts:
-                restart_count += 1
-                print(f"   Restarting Chrome "
-                      f"({restart_count}/{max_restarts})...")
-                driver = restart_driver(driver,
-                                        chrome_profile=chrome_profile,
-                                        profile_dir=profile_dir,
-                                        remote_debug=remote_debug)
-                warm_up_hd_session(driver, zip_code=zip_code,
-                                   hd_login=hd_login)
-                main_window = driver.current_window_handle
-
-            # If we've been blocked 6+ times in a row, give up
-            if consecutive_blocks >= 6:
-                print("   Too many consecutive blocks. "
-                      "Stopping browser checks.")
+                  f"({consecutive_blocks}/3)")
+            if consecutive_blocks >= 3:
+                print("   3 consecutive blocked batches. Stopping.")
                 break
-
-            time.sleep(cooldown)
         else:
             consecutive_blocks = 0
             # Browse HD homepage to build trust between batches
