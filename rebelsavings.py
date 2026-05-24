@@ -2071,13 +2071,20 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
     restart_count = 0
     max_restarts = 3
 
-    # ── Pass 1: API checks with block detection + backoff ────────────
-    browser_queue = []  # (idx, deal) pairs that need browser fallback
+    # ── Pass 1: API checks (bail fast if blocked) ───────────────────
+    # The API uses raw HTTP requests (no cookies/sensor data), so HD
+    # blocks it aggressively.  Try a few items — if it works, great.
+    # If blocked 3x in a row, skip the API entirely and send everything
+    # to the browser pass (which has the real Chrome profile + sensor).
+    browser_queue = []
     api_consecutive_blocks = 0
-    api_backoff = 2  # seconds, doubles on each consecutive block
-    api_max_backoff = 600  # 10 minutes max
+    api_gave_up = False
 
     for pos, (idx, deal) in enumerate(to_check):
+        if api_gave_up:
+            browser_queue.append((idx, deal))
+            continue
+
         name = deal['name']
         hd_url = deal['url']
         sku = extract_sku_from_url(hd_url)
@@ -2090,14 +2097,19 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 print(f"   API: ${api_price:.2f} → {api_status.upper()}"
                       if api_price else f"   API: → {api_status.upper()}")
 
-        # Detect API block — back off exponentially
+        # Detect API block — give up after 3 consecutive blocks
         if api_status == HDStatus.BLOCKED:
             api_consecutive_blocks += 1
-            api_backoff = min(api_backoff * 2, api_max_backoff)
-            print(f"   !!! API BLOCKED ({api_consecutive_blocks}x). "
-                  f"Backing off {api_backoff}s...")
-            time.sleep(api_backoff)
+            if api_consecutive_blocks >= 3:
+                remaining = len(to_check) - pos - 1
+                print(f"   !!! API blocked {api_consecutive_blocks}x in a row. "
+                      f"Skipping API for remaining {remaining} items.")
+                api_gave_up = True
+                browser_queue.append((idx, deal))
+                continue
+            print(f"   !!! API BLOCKED ({api_consecutive_blocks}/3)")
             browser_queue.append((idx, deal))
+            time.sleep(random.uniform(2, 5))
             continue
 
         if api_status in (HDStatus.PENNY, HDStatus.NOT_PENNY,
@@ -2109,8 +2121,6 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
             deal_list[idx]['updated_at'] = now
             checked += 1
             api_consecutive_blocks = 0
-            api_backoff = 2  # reset backoff on success
-            # Save every 10 API successes
             if checked % 10 == 0:
                 with open(tsv_output_path, 'w', encoding="utf-8") as f_out:
                     print(pad_row(FIELDNAMES), file=f_out)
@@ -2118,9 +2128,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                         print(pad_row(d), file=f_out)
             time.sleep(random.uniform(1, 3))
         else:
-            # API returned None — product may not exist or needs browser
             api_consecutive_blocks = 0
-            api_backoff = 2
             browser_queue.append((idx, deal))
             time.sleep(random.uniform(0.5, 1.5))
 
@@ -2131,7 +2139,8 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
             for d in deal_list:
                 print(pad_row(d), file=f_out)
     print(f"\nAPI pass done: {checked} checked, "
-          f"{len(browser_queue)} need browser.")
+          f"{len(browser_queue)} need browser"
+          f"{' (API blocked)' if api_gave_up else ''}.")
 
     # ── Pass 2: Browser batch checks (random batch size 1-10) ───────
     if not browser_queue:
