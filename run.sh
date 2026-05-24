@@ -13,6 +13,13 @@
 # Usage:
 #   ./run.sh            # full pipeline (~8 hours)
 #   ./run.sh --skip1    # skip phase 1, start from phase 2
+#
+# For best anti-bot results, launch Chrome with remote debugging before running:
+#   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+#       --remote-debugging-port=9222 \
+#       --user-data-dir="$HOME/Library/Application Support/Google/Chrome-Debug" \
+#       --no-first-run --no-default-browser-check
+# The script auto-detects Chrome on port 9222 and attaches to it.
 
 set -uo pipefail
 cd "$(dirname "$0")"

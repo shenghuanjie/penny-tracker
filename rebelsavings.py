@@ -38,13 +38,33 @@ DEFAULT_REMOTE_DEBUG = "localhost:9222"
 DEBUG_USER_DATA_DIR = "/Users/shengh4/Library/Application Support/Google/Chrome-Debug"
 
 
-def simulate_human_behavior(driver, duration=None):
-    """Generate realistic mouse movements, scrolls, and pauses to feed
-    Akamai's sensor script with human-like interaction data.
+def _bezier_curve(x0, y0, x1, y1, steps=15):
+    """Generate points along a cubic Bezier curve between two points.
+    Produces natural-looking mouse trajectories with slight curvature."""
+    cx1 = x0 + (x1 - x0) * random.uniform(0.2, 0.5) + random.randint(-40, 40)
+    cy1 = y0 + (y1 - y0) * random.uniform(0.0, 0.3) + random.randint(-40, 40)
+    cx2 = x0 + (x1 - x0) * random.uniform(0.5, 0.8) + random.randint(-40, 40)
+    cy2 = y0 + (y1 - y0) * random.uniform(0.7, 1.0) + random.randint(-40, 40)
+    points = []
+    for i in range(steps + 1):
+        t = i / steps
+        u = 1 - t
+        x = int(u**3 * x0 + 3 * u**2 * t * cx1 +
+                3 * u * t**2 * cx2 + t**3 * x1)
+        y = int(u**3 * y0 + 3 * u**2 * t * cy1 +
+                3 * u * t**2 * cy2 + t**3 * y1)
+        points.append((x, y))
+    return points
 
-    *duration* controls roughly how long to interact (default 3-8s).
-    Uses JavaScript-dispatched mouse events so they register with
-    Akamai's sensor regardless of ActionChains quirks.
+
+def simulate_human_behavior(driver, duration=None):
+    """Generate realistic mouse movements, scrolls, keyboard presses,
+    and pauses using real ActionChains (isTrusted: true events).
+
+    Akamai's sensor detects JS-dispatched events (isTrusted: false).
+    ActionChains go through Chrome DevTools Protocol which produces
+    isTrusted: true events, indistinguishable from real human input.
+    Mouse follows Bezier curves for natural trajectories.
     """
     if duration is None:
         duration = random.uniform(3, 8)
@@ -57,44 +77,67 @@ def simulate_human_behavior(driver, duration=None):
     except Exception:
         vw, vh = 1920, 1080
 
-    # Current simulated mouse position
+    # Move mouse to a safe starting position near center
     mx, my = vw // 2, vh // 2
+    try:
+        body = driver.find_element(By.TAG_NAME, "body")
+        ActionChains(driver).move_to_element(body).perform()
+    except Exception:
+        pass
 
     while time.time() - start < duration:
-        action = random.choice(["move", "move", "scroll", "pause"])
+        action = random.choices(
+            ["move", "scroll", "pause", "key"],
+            weights=[40, 30, 20, 10]
+        )[0]
 
         if action == "move":
-            # Move mouse in small steps to a new random position
-            # (Akamai tracks mousemove event frequency and trajectory)
-            tx = random.randint(100, vw - 100)
-            ty = random.randint(100, vh - 100)
-            steps = random.randint(3, 8)
-            dx = (tx - mx) / steps
-            dy = (ty - my) / steps
-            for _ in range(steps):
-                mx = int(mx + dx + random.uniform(-5, 5))
-                my = int(my + dy + random.uniform(-5, 5))
-                mx = max(0, min(mx, vw))
-                my = max(0, min(my, vh))
+            # Move mouse along a Bezier curve to a random target
+            tx = random.randint(80, vw - 80)
+            ty = random.randint(80, vh - 80)
+            points = _bezier_curve(mx, my, tx, ty,
+                                   steps=random.randint(8, 20))
+            try:
+                for px, py in points:
+                    dx = px - mx
+                    dy = py - my
+                    if abs(dx) < 1 and abs(dy) < 1:
+                        continue
+                    ActionChains(driver).move_by_offset(dx, dy).perform()
+                    mx, my = px, py
+                    time.sleep(random.uniform(0.01, 0.04))
+            except Exception:
+                # Reset to body center if we drifted out of bounds
                 try:
-                    driver.execute_script(
-                        "document.elementFromPoint(arguments[0], arguments[1])"
-                        "?.dispatchEvent(new MouseEvent('mousemove', "
-                        "{clientX: arguments[0], clientY: arguments[1], "
-                        "bubbles: true}));", mx, my)
+                    mx, my = vw // 2, vh // 2
+                    body = driver.find_element(By.TAG_NAME, "body")
+                    ActionChains(driver).move_to_element(body).perform()
                 except Exception:
                     pass
-                time.sleep(random.uniform(0.02, 0.08))
-            time.sleep(random.uniform(0.1, 0.4))
+            time.sleep(random.uniform(0.1, 0.5))
 
         elif action == "scroll":
             direction = random.choice([1, 1, 1, -1])
             amount = direction * random.randint(100, 400)
             try:
-                driver.execute_script(f"window.scrollBy(0, {amount});")
+                driver.execute_script(
+                    f"window.scrollBy({{top: {amount}, "
+                    f"behavior: 'smooth'}});")
             except Exception:
                 pass
-            time.sleep(random.uniform(0.3, 1.0))
+            time.sleep(random.uniform(0.5, 1.5))
+
+        elif action == "key":
+            key = random.choice([
+                Keys.PAGE_DOWN, Keys.PAGE_UP,
+                Keys.ARROW_DOWN, Keys.ARROW_DOWN, Keys.ARROW_DOWN,
+                Keys.ARROW_UP,
+            ])
+            try:
+                ActionChains(driver).send_keys(key).perform()
+            except Exception:
+                pass
+            time.sleep(random.uniform(0.3, 0.8))
 
         elif action == "pause":
             time.sleep(random.uniform(0.5, 2.0))
@@ -1289,27 +1332,36 @@ def _launch_chrome_debug(port, user_data_dir=None, profile_dir=None):
 def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
     """Create a browser driver.
 
-    Priority: remote_debug → UC with profile (default) → bare UC.
+    Priority:
+      1. Explicit --remote-debug flag → attach to that address
+      2. Auto-detect Chrome on localhost:9222 → attach if found
+      3. UC with profile (default) → bare UC
 
     Args:
         chrome_profile: Path to Chrome user-data-dir (your real Chrome profile).
                         Chrome must be fully closed when using this.
         profile_dir:    Profile directory name inside user-data-dir (e.g. "Default",
                         "Profile 1"). Only used with chrome_profile.
-        remote_debug:   Connect to an already-running Chrome via debugging port
+        remote_debug:   Connect to running Chrome via debugging port
                         (e.g. "localhost:9222"). Launch Chrome yourself with
                         --remote-debugging-port=9222 first.
+                        If not set, auto-detects Chrome on localhost:9222.
     """
-    # --- Remote debugging: attach to existing Chrome ---
-    if remote_debug:
+    # --- Remote debugging: explicit flag or auto-detect ---
+    debug_addr = remote_debug
+    if not debug_addr and _is_port_open("localhost", 9222):
+        debug_addr = DEFAULT_REMOTE_DEBUG
+        logging.info("Auto-detected Chrome on port 9222 — attaching via remote debug")
+
+    if debug_addr:
         service = ChromeService(ChromeDriverManager().install())
-        host, port = remote_debug.split(":")
+        host, port = debug_addr.split(":")
         port = int(port)
         if not _is_port_open(host, port):
             _launch_chrome_debug(port, chrome_profile, profile_dir)
-        logging.info("Connecting to Chrome at %s via remote debugging", remote_debug)
+        logging.info("Connecting to Chrome at %s via remote debugging", debug_addr)
         options = webdriver.ChromeOptions()
-        options.debugger_address = remote_debug
+        options.debugger_address = debug_addr
         options.page_load_strategy = 'eager'
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(60)
@@ -2107,25 +2159,44 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
 
     main_window = driver.current_window_handle
     consecutive_blocks = 0
-    max_consecutive_blocks = 5
     batch_num = 0
     i = 0
+
+    # Per-batch log file for debugging block patterns
+    log_path = os.path.join(os.path.dirname(tsv_output_path) or ".",
+                            "phase2_log.tsv")
+    with open(log_path, 'a', encoding='utf-8') as logf:
+        logf.write(f"\n# Phase 2 started: "
+                   f"{datetime.datetime.now().strftime(TIMESTAMP_FORMAT)} "
+                   f"| {len(browser_queue)} items | {hours}h window\n")
+        logf.write("timestamp\tbatch\tsize\titem\tstatus\tnav_source\turl\n")
+
+    def _log_item(batch_n, size, name, status, url):
+        ts = datetime.datetime.now().strftime(TIMESTAMP_FORMAT)
+        try:
+            with open(log_path, 'a', encoding='utf-8') as logf:
+                logf.write(f"{ts}\t{batch_n}\t{size}\t"
+                           f"{name[:60]}\t{status}\t{url}\n")
+        except Exception:
+            pass
 
     while i < len(browser_queue):
         batch_start = time.time()
 
         # Random batch size 1-10 for each batch
-        cur_batch_size = random.randint(1, 10)
+        cur_batch_size = random.randint(1, 3)
         batch = browser_queue[i:i + cur_batch_size]
         batch_num += 1
 
         elapsed_total = time.time() - phase2_start
         remaining_time = max(total_seconds - elapsed_total, 0)
         items_left = len(browser_queue) - i
-        print(f"\n── Batch {batch_num} (size {len(batch)}): "
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        print(f"\n[{ts}] ── Batch {batch_num} (size {len(batch)}): "
               f"items {i + 1}–{i + len(batch)} "
               f"of {len(browser_queue)} | "
-              f"{remaining_time/3600:.1f}h left ──")
+              f"{remaining_time/3600:.1f}h left | "
+              f"{checked} checked ──")
 
         # Ensure Chrome is alive
         if not is_chrome_alive(driver):
@@ -2163,22 +2234,9 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         if not tab_map:
             print("   No tabs opened — skipping batch")
             consecutive_blocks += 1
-            if consecutive_blocks >= max_consecutive_blocks:
-                if restart_count < max_restarts:
-                    restart_count += 1
-                    print(f"   Restarting Chrome "
-                          f"({restart_count}/{max_restarts})...")
-                    driver = restart_driver(driver,
-                                            chrome_profile=chrome_profile,
-                                            profile_dir=profile_dir,
-                                            remote_debug=remote_debug)
-                    warm_up_hd_session(driver, zip_code=zip_code,
-                                       hd_login=hd_login)
-                    main_window = driver.current_window_handle
-                    consecutive_blocks = 0
-                else:
-                    print("Max restarts reached. Stopping.")
-                    break
+            if consecutive_blocks >= 3:
+                print("   3 consecutive failed batches. Stopping.")
+                break
             i += cur_batch_size
             continue
 
@@ -2192,6 +2250,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         batch_blocked = 0
         for idx, deal, tab_handle, nav_ok in tab_map:
             name = deal['name']
+            hd_url = deal.get('url', '')
             try:
                 driver.switch_to.window(tab_handle)
                 if nav_ok:
@@ -2205,6 +2264,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 deal_list[idx]['hd_status'] = hd_status
                 deal_list[idx]['updated_at'] = now
                 print(f"   Result: {name[:50]} → {hd_status.upper()}")
+                _log_item(batch_num, len(batch), name, hd_status, hd_url)
                 checked += 1
                 batch_checked += 1
 
@@ -2213,6 +2273,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                     batch_blocked += 1
             except Exception as exc:
                 print(f"   Error reading tab for {name[:40]}: {exc}")
+                _log_item(batch_num, len(batch), name, "EXCEPTION", hd_url)
 
         # ── Close all tabs except main ─────────────────────────────
         _close_extra_tabs(main_window)
@@ -2259,7 +2320,8 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         batch_elapsed = time.time() - batch_start
         pause = max(pause - batch_elapsed, 10)
 
-        print(f"   Sleeping {pause:.0f}s "
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        print(f"   [{ts}] Sleeping {pause:.0f}s "
               f"(~{pause/60:.1f}min, {items_left_after} items in "
               f"{remaining_time/3600:.1f}h)")
         time.sleep(pause)
@@ -2267,6 +2329,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
     elapsed = time.time() - phase2_start
     print(f"\nPhase 2 complete: {checked} items checked on HD "
           f"in {elapsed/3600:.1f}h.")
+    print(f"Detailed log: {log_path}")
 
 
 def main():
