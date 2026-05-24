@@ -2107,9 +2107,26 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
 
     main_window = driver.current_window_handle
     consecutive_blocks = 0
-    max_consecutive_blocks = 5
     batch_num = 0
     i = 0
+
+    # Per-batch log file for debugging block patterns
+    log_path = os.path.join(os.path.dirname(tsv_output_path) or ".",
+                            "phase2_log.tsv")
+    with open(log_path, 'a', encoding='utf-8') as logf:
+        logf.write(f"\n# Phase 2 started: "
+                   f"{datetime.datetime.now().strftime(TIMESTAMP_FORMAT)} "
+                   f"| {len(browser_queue)} items | {hours}h window\n")
+        logf.write("timestamp\tbatch\tsize\titem\tstatus\tnav_source\turl\n")
+
+    def _log_item(batch_n, size, name, status, url):
+        ts = datetime.datetime.now().strftime(TIMESTAMP_FORMAT)
+        try:
+            with open(log_path, 'a', encoding='utf-8') as logf:
+                logf.write(f"{ts}\t{batch_n}\t{size}\t"
+                           f"{name[:60]}\t{status}\t{url}\n")
+        except Exception:
+            pass
 
     while i < len(browser_queue):
         batch_start = time.time()
@@ -2122,10 +2139,12 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         elapsed_total = time.time() - phase2_start
         remaining_time = max(total_seconds - elapsed_total, 0)
         items_left = len(browser_queue) - i
-        print(f"\n── Batch {batch_num} (size {len(batch)}): "
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        print(f"\n[{ts}] ── Batch {batch_num} (size {len(batch)}): "
               f"items {i + 1}–{i + len(batch)} "
               f"of {len(browser_queue)} | "
-              f"{remaining_time/3600:.1f}h left ──")
+              f"{remaining_time/3600:.1f}h left | "
+              f"{checked} checked ──")
 
         # Ensure Chrome is alive
         if not is_chrome_alive(driver):
@@ -2163,22 +2182,9 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         if not tab_map:
             print("   No tabs opened — skipping batch")
             consecutive_blocks += 1
-            if consecutive_blocks >= max_consecutive_blocks:
-                if restart_count < max_restarts:
-                    restart_count += 1
-                    print(f"   Restarting Chrome "
-                          f"({restart_count}/{max_restarts})...")
-                    driver = restart_driver(driver,
-                                            chrome_profile=chrome_profile,
-                                            profile_dir=profile_dir,
-                                            remote_debug=remote_debug)
-                    warm_up_hd_session(driver, zip_code=zip_code,
-                                       hd_login=hd_login)
-                    main_window = driver.current_window_handle
-                    consecutive_blocks = 0
-                else:
-                    print("Max restarts reached. Stopping.")
-                    break
+            if consecutive_blocks >= 3:
+                print("   3 consecutive failed batches. Stopping.")
+                break
             i += cur_batch_size
             continue
 
@@ -2192,6 +2198,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         batch_blocked = 0
         for idx, deal, tab_handle, nav_ok in tab_map:
             name = deal['name']
+            hd_url = deal.get('url', '')
             try:
                 driver.switch_to.window(tab_handle)
                 if nav_ok:
@@ -2205,6 +2212,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 deal_list[idx]['hd_status'] = hd_status
                 deal_list[idx]['updated_at'] = now
                 print(f"   Result: {name[:50]} → {hd_status.upper()}")
+                _log_item(batch_num, len(batch), name, hd_status, hd_url)
                 checked += 1
                 batch_checked += 1
 
@@ -2213,6 +2221,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                     batch_blocked += 1
             except Exception as exc:
                 print(f"   Error reading tab for {name[:40]}: {exc}")
+                _log_item(batch_num, len(batch), name, "EXCEPTION", hd_url)
 
         # ── Close all tabs except main ─────────────────────────────
         _close_extra_tabs(main_window)
@@ -2259,7 +2268,8 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         batch_elapsed = time.time() - batch_start
         pause = max(pause - batch_elapsed, 10)
 
-        print(f"   Sleeping {pause:.0f}s "
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        print(f"   [{ts}] Sleeping {pause:.0f}s "
               f"(~{pause/60:.1f}min, {items_left_after} items in "
               f"{remaining_time/3600:.1f}h)")
         time.sleep(pause)
@@ -2267,6 +2277,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
     elapsed = time.time() - phase2_start
     print(f"\nPhase 2 complete: {checked} items checked on HD "
           f"in {elapsed/3600:.1f}h.")
+    print(f"Detailed log: {log_path}")
 
 
 def main():
