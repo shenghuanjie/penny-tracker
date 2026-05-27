@@ -268,10 +268,12 @@ class RunningMode:
 
 
 class HDStatus:
-    PENNY = 'penny'
+    PENNY_NEW = 'penny_new'       # $0.01 and Ship To Store available
+    PENNY = 'penny'               # $0.01 (pickup/in-store only or unknown)
     NOT_PENNY = 'not_penny'
     PENNY_CANDIDATE = 'penny_candidate'
     CLEARANCE = 'clearance'
+    PENNY_OLD = 'penny_old'       # $0.01 but out of stock everywhere
     OUT_OF_STOCK = 'out_of_stock'
     ERROR = 'error'
     FAILURE = 'failure'
@@ -307,15 +309,17 @@ def generate_html_report(deals, output_path):
     # Primary: penny & OOS first (by latest updated_at desc),
     # then blocked/failed, clearance, everything else
     status_priority = {
-        'penny': 0,
-        'out_of_stock': 1,
-        'blocked': 2,
-        'failure': 3,
-        'error': 4,
-        'clearance': 5,
-        'penny_candidate': 6,
-        'not_penny': 7,
-        'unchecked': 8,
+        'penny_new': 0,
+        'penny': 1,
+        'penny_old': 2,
+        'out_of_stock': 3,
+        'blocked': 4,
+        'failure': 5,
+        'error': 6,
+        'clearance': 7,
+        'penny_candidate': 8,
+        'not_penny': 9,
+        'unchecked': 10,
     }
 
     def _sort_key(d):
@@ -376,6 +380,24 @@ def generate_html_report(deals, output_path):
             <td><a href="{url}" target="_blank">Link</a></td>
         </tr>"""
 
+    # --- Build penny SKU lookup for the scanner tab ---
+    import json as _json
+    penny_skus = {}
+    for d in deals:
+        status = d.get('hd_status', '') or ''
+        url = d.get('url', '')
+        if not url or 'homedepot.com' not in url:
+            continue
+        sku = extract_sku_from_url(url)
+        if not sku:
+            continue
+        penny_skus[sku] = {
+            "name": d.get('name', '')[:80],
+            "status": status,
+            "url": url,
+        }
+    penny_skus_json = _json.dumps(penny_skus)
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Penny Deal Tracker</title>
@@ -403,7 +425,9 @@ def generate_html_report(deals, output_path):
     .fb-table th {{ background: #1877f2; }}
     tr:nth-child(even) {{ background-color: #f9f9f9; }}
     img {{ width: 70px; height: auto; border-radius: 4px; object-fit: cover; }}
+    .penny_new {{ color: #27ae60; font-weight: bold; }}
     .penny {{ color: #3498db; font-weight: bold; }}
+    .penny_old {{ color: #7f8c8d; font-weight: bold; font-style: italic; }}
     .not_penny {{ color: #e74c3c; font-weight: bold; }}
     .penny_candidate {{ color: #f39c12; font-weight: bold; }}
     .clearance {{ color: #2ecc71; font-weight: bold; }}
@@ -424,6 +448,36 @@ def generate_html_report(deals, output_path):
     .reset-btn {{ background: #f96302; color: white; border: none; padding: 6px 14px;
                   border-radius: 4px; cursor: pointer; font-size: 13px; margin-left: 12px; }}
     .reset-btn:hover {{ background: #e05800; }}
+    /* Scanner tab */
+    .scanner-container {{ max-width: 800px; margin: 0 auto; padding: 20px; }}
+    .drop-zone {{ border: 3px dashed #ccc; border-radius: 12px; padding: 40px 20px;
+                   text-align: center; cursor: pointer; transition: all 0.3s;
+                   background: #fafafa; margin-bottom: 20px; }}
+    .drop-zone:hover, .drop-zone.dragover {{ border-color: #f96302; background: #fff5ee; }}
+    .drop-zone p {{ margin: 8px 0; color: #666; }}
+    .drop-zone .icon {{ font-size: 48px; }}
+    .scanner-btn {{ background: #f96302; color: white; border: none; padding: 10px 20px;
+                     border-radius: 6px; cursor: pointer; font-size: 14px; margin: 5px; }}
+    .scanner-btn:hover {{ background: #e05800; }}
+    .scanner-btn:disabled {{ background: #ccc; cursor: not-allowed; }}
+    .scanner-preview {{ max-width: 100%; max-height: 300px; border-radius: 8px;
+                         margin: 10px 0; display: none; }}
+    .scanner-progress {{ display: none; margin: 15px 0; }}
+    .scanner-progress .bar {{ height: 6px; background: #eee; border-radius: 3px; overflow: hidden; }}
+    .scanner-progress .fill {{ height: 100%; background: #f96302; transition: width 0.3s; width: 0%; }}
+    .scanner-progress .label {{ font-size: 13px; color: #888; margin-top: 4px; }}
+    .scanner-results {{ margin-top: 20px; }}
+    .scanner-results h3 {{ margin-bottom: 10px; }}
+    .sku-result {{ padding: 12px 16px; margin: 8px 0; border-radius: 8px; border: 1px solid #eee; }}
+    .sku-result.match {{ background: #e8f5e9; border-color: #4caf50; }}
+    .sku-result.penny-match {{ background: #e3f2fd; border-color: #2196f3; }}
+    .sku-result.no-match {{ background: #fff3e0; border-color: #ff9800; }}
+    .sku-result .sku-num {{ font-weight: bold; font-size: 16px; font-family: monospace; }}
+    .sku-result .sku-status {{ font-size: 13px; margin-top: 4px; }}
+    .ocr-text {{ background: #f5f5f5; padding: 12px; border-radius: 6px; font-family: monospace;
+                  font-size: 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap;
+                  margin: 10px 0; display: none; }}
+    .toggle-link {{ color: #1877f2; cursor: pointer; font-size: 13px; }}
 </style>
 </head><body>
     <h2>Penny Deal Tracker</h2>
@@ -434,6 +488,7 @@ def generate_html_report(deals, output_path):
     <div class="tabs">
         <div class="tab hd active" onclick="switchTab('hd')">RebelSavings ({len(deals)})</div>
         {('<div class="tab fb" onclick="switchTab(&#39;fb&#39;)">Facebook Group (' + str(len(fb_deals)) + ')</div>') if has_fb else ''}
+        <div class="tab scanner" onclick="switchTab('scanner')">📷 SKU Scanner</div>
     </div>
 
     <div id="tab-hd" class="tab-content active">
@@ -505,6 +560,46 @@ def generate_html_report(deals, output_path):
         <th>Post Snippet</th><th>Date</th></tr>
     {fb_rows}
     </table></div>"""
+
+    # --- Scanner Tab ---
+    html += f"""
+    <div id="tab-scanner" class="tab-content">
+    <div class="scanner-container">
+        <h3>SKU Scanner</h3>
+        <p style="color:#666; margin-bottom:15px;">
+            Upload a receipt, shelf tag, or price scanner photo.
+            OCR runs in your browser — nothing is uploaded to any server.
+        </p>
+
+        <div class="drop-zone" id="dropZone">
+            <div class="icon">📷</div>
+            <p><b>Drop image here</b> or click to upload</p>
+            <p style="font-size:12px; color:#999;">Also supports Ctrl+V paste</p>
+        </div>
+        <input type="file" id="fileInput" accept="image/*" style="display:none;">
+        <button class="scanner-btn" id="cameraBtn" style="display:none;">📱 Use Camera</button>
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;">
+
+        <img id="scannerPreview" class="scanner-preview">
+
+        <div class="scanner-progress" id="scannerProgress">
+            <div class="bar"><div class="fill" id="progressFill"></div></div>
+            <div class="label" id="progressLabel">Initializing OCR...</div>
+        </div>
+
+        <div class="scanner-results" id="scannerResults"></div>
+
+        <div class="ocr-text" id="ocrText"></div>
+        <span class="toggle-link" id="toggleOcr" style="display:none;"
+              onclick="document.getElementById('ocrText').style.display=
+                       document.getElementById('ocrText').style.display==='none'?'block':'none';">
+            Show/hide raw OCR text
+        </span>
+    </div>
+    </div>
+
+    <script>const PENNY_SKUS = {penny_skus_json};</script>
+    """
 
     # --- JavaScript: tab switching + column sorting ---
     html += """
@@ -580,6 +675,165 @@ function resetSort() {
     rows.sort((a, b) => parseInt(a.dataset.idx) - parseInt(b.dataset.idx));
     rows.forEach(r => tbody.appendChild(r));
 }
+</script>
+
+<!-- Tesseract.js for client-side OCR -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+(function() {
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const cameraBtn = document.getElementById('cameraBtn');
+    const cameraInput = document.getElementById('cameraInput');
+    const preview = document.getElementById('scannerPreview');
+    const progress = document.getElementById('scannerProgress');
+    const progressFill = document.getElementById('progressFill');
+    const progressLabel = document.getElementById('progressLabel');
+    const results = document.getElementById('scannerResults');
+    const ocrTextEl = document.getElementById('ocrText');
+    const toggleOcr = document.getElementById('toggleOcr');
+
+    // Show camera button on mobile
+    if (/Mobi|Android/i.test(navigator.userAgent)) {
+        cameraBtn.style.display = 'inline-block';
+    }
+
+    // Drop zone events
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => {
+        e.preventDefault(); dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault(); dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) processImage(e.dataTransfer.files[0]);
+    });
+
+    fileInput.addEventListener('change', e => {
+        if (e.target.files.length) processImage(e.target.files[0]);
+    });
+
+    cameraBtn.addEventListener('click', () => cameraInput.click());
+    cameraInput.addEventListener('change', e => {
+        if (e.target.files.length) processImage(e.target.files[0]);
+    });
+
+    // Paste support
+    document.addEventListener('paste', e => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                e.preventDefault();
+                processImage(item.getAsFile());
+                // Switch to scanner tab
+                switchTab('scanner');
+                return;
+            }
+        }
+    });
+
+    async function processImage(file) {
+        // Show preview
+        const url = URL.createObjectURL(file);
+        preview.src = url;
+        preview.style.display = 'block';
+
+        // Reset
+        results.innerHTML = '';
+        ocrTextEl.textContent = '';
+        ocrTextEl.style.display = 'none';
+        toggleOcr.style.display = 'none';
+        progress.style.display = 'block';
+        progressFill.style.width = '0%';
+        progressLabel.textContent = 'Loading OCR engine...';
+
+        try {
+            const { data } = await Tesseract.recognize(file, 'eng', {
+                logger: m => {
+                    if (m.status === 'recognizing text') {
+                        const pct = Math.round((m.progress || 0) * 100);
+                        progressFill.style.width = pct + '%';
+                        progressLabel.textContent = `Scanning... ${pct}%`;
+                    } else if (m.status) {
+                        progressLabel.textContent = m.status;
+                    }
+                }
+            });
+
+            progressFill.style.width = '100%';
+            progressLabel.textContent = 'Done!';
+            setTimeout(() => { progress.style.display = 'none'; }, 1500);
+
+            // Show raw OCR text
+            ocrTextEl.textContent = data.text;
+            toggleOcr.style.display = 'inline';
+
+            // Extract and check SKUs
+            analyzeText(data.text);
+
+        } catch (err) {
+            progressLabel.textContent = 'OCR failed: ' + err.message;
+            progressFill.style.width = '0%';
+        }
+    }
+
+    function analyzeText(text) {
+        // Extract potential SKUs: 6-12 digit numbers
+        const allNums = text.match(/\\b\\d{6,12}\\b/g) || [];
+        // Also look for explicit SKU/model patterns
+        const skuPattern = /(?:SKU|sku|model|Model|item|Item)[#:\\s]*(\\d{6,9})/g;
+        let m;
+        while ((m = skuPattern.exec(text)) !== null) {
+            if (!allNums.includes(m[1])) allNums.push(m[1]);
+        }
+
+        // Deduplicate
+        const skus = [...new Set(allNums)];
+
+        if (skus.length === 0) {
+            results.innerHTML = '<p style="color:#999;">No SKU numbers found in image. ' +
+                'Try a clearer photo of the receipt or shelf tag.</p>';
+            return;
+        }
+
+        let html = '<h3>Found ' + skus.length + ' potential SKU(s)</h3>';
+        let pennyCount = 0;
+
+        for (const sku of skus) {
+            const info = PENNY_SKUS[sku];
+            if (info) {
+                const isPenny = info.status.includes('penny');
+                const cssClass = isPenny ? 'penny-match' : 'match';
+                if (isPenny) pennyCount++;
+                const statusLabel = info.status.toUpperCase().replace(/_/g, ' ');
+                html += `<div class="sku-result ${cssClass}">
+                    <div class="sku-num">${isPenny ? '🎯 ' : '✅ '}${sku}</div>
+                    <div class="sku-status">
+                        <b>${info.name}</b><br>
+                        Status: <span class="${info.status}">${statusLabel}</span>
+                        &nbsp;|&nbsp; <a href="${info.url}" target="_blank">View on HD</a>
+                    </div>
+                </div>`;
+            } else {
+                html += `<div class="sku-result no-match">
+                    <div class="sku-num">❓ ${sku}</div>
+                    <div class="sku-status">Not in our tracker &nbsp;|&nbsp;
+                        <a href="https://www.homedepot.com/s/${sku}" target="_blank">Search HD</a>
+                    </div>
+                </div>`;
+            }
+        }
+
+        if (pennyCount > 0) {
+            html = `<div style="background:#e3f2fd; padding:12px 16px; border-radius:8px;
+                     margin-bottom:15px; font-size:16px;">
+                     🎯 <b>${pennyCount} penny item(s) found!</b></div>` + html;
+        }
+
+        results.innerHTML = html;
+    }
+})();
 </script>
 </body></html>"""
 
@@ -1051,22 +1305,27 @@ def navigate_to_hd_product(driver, hd_url, name=''):
 
 def browse_hd_homepage(driver):
     """
-    Navigate to HD homepage and simulate realistic browsing.
-    Feeds Akamai's sensor script with human-like interaction data
-    (mouse movements, scrolls, pauses) to build trust.
+    Browse HD like a real person: visit a page, scroll around, click on
+    a product or link, read it, maybe go back.  Each call picks a random
+    action sequence so the pattern never repeats exactly.
     """
     try:
-        # Pick a random HD page to visit (not always homepage)
+        # Pick a random HD page to visit
         pages = [
             "https://www.homedepot.com",
             "https://www.homedepot.com/b/Tools/N-5yc1vZc1xy",
             "https://www.homedepot.com/b/Outdoors/N-5yc1vZbx3j",
             "https://www.homedepot.com/b/Hardware/N-5yc1vZc21m",
             "https://www.homedepot.com/b/Appliances/N-5yc1vZbv09",
+            "https://www.homedepot.com/b/Bath/N-5yc1vZbzb3",
+            "https://www.homedepot.com/b/Lighting/N-5yc1vZbvn5",
+            "https://www.homedepot.com/b/Kitchen/N-5yc1vZas6p",
+            "https://www.homedepot.com/b/Paint/N-5yc1vZar2d",
+            "https://www.homedepot.com/b/Electrical/N-5yc1vZbm09",
         ]
         url = random.choice(pages)
         driver.get(url)
-        time.sleep(random.uniform(3, 5))
+        time.sleep(random.uniform(3, 6))
 
         if is_hd_blocked(driver):
             clear_hd_cookies(driver)
@@ -1074,10 +1333,157 @@ def browse_hd_homepage(driver):
             driver.get("https://www.homedepot.com")
             time.sleep(random.uniform(3, 5))
 
-        # Simulate realistic browsing with mouse + scroll
-        simulate_human_behavior(driver, duration=random.uniform(5, 15))
+        # Browse and interact like a real person
+        simulate_human_behavior(driver, duration=random.uniform(5, 10))
+
+        # Pick a random action sequence
+        action = random.choice([
+            "click_product", "click_product", "click_product",
+            "use_search", "click_nav", "just_browse",
+        ])
+
+        if action == "click_product":
+            # Click on a random product card
+            try:
+                product_links = driver.find_elements(
+                    By.XPATH,
+                    "//a[contains(@href, '/p/') and .//img]"
+                    " | //div[contains(@class, 'product-pod')]//a"
+                    " | //a[@data-testid='product-header']")
+                if product_links:
+                    link = random.choice(product_links[:12])
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});",
+                        link)
+                    time.sleep(random.uniform(0.5, 1.5))
+                    human_click(driver, link)
+                    time.sleep(random.uniform(3, 6))
+                    # Browse the product page
+                    simulate_human_behavior(
+                        driver, duration=random.uniform(5, 15))
+                    # Sometimes go back, sometimes stay
+                    if random.random() < 0.6:
+                        driver.back()
+                        time.sleep(random.uniform(2, 4))
+                        simulate_human_behavior(
+                            driver, duration=random.uniform(3, 6))
+            except Exception:
+                pass
+
+        elif action == "use_search":
+            # Type a random search term
+            try:
+                search_terms = [
+                    "hammer", "drill", "paint", "screws", "light bulb",
+                    "faucet", "door knob", "shelf", "tape", "gloves",
+                    "saw blade", "sandpaper", "extension cord", "pliers",
+                ]
+                search_box = driver.find_element(
+                    By.XPATH,
+                    "//input[@data-testid='header-search-input']"
+                    " | //input[@id='headerSearch']"
+                    " | //input[@type='search']")
+                human_click(driver, search_box)
+                time.sleep(random.uniform(0.5, 1.0))
+                term = random.choice(search_terms)
+                # Type character by character
+                for ch in term:
+                    ActionChains(driver).send_keys(ch).perform()
+                    time.sleep(random.uniform(0.05, 0.15))
+                time.sleep(random.uniform(0.5, 1.5))
+                ActionChains(driver).send_keys(Keys.RETURN).perform()
+                time.sleep(random.uniform(3, 6))
+                simulate_human_behavior(
+                    driver, duration=random.uniform(5, 10))
+                # Click a result sometimes
+                if random.random() < 0.4:
+                    results = driver.find_elements(
+                        By.XPATH, "//a[contains(@href, '/p/')]")
+                    if results:
+                        r = random.choice(results[:8])
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView({block:'center'});",
+                            r)
+                        time.sleep(random.uniform(0.5, 1.0))
+                        human_click(driver, r)
+                        time.sleep(random.uniform(3, 5))
+                        simulate_human_behavior(
+                            driver, duration=random.uniform(4, 8))
+            except Exception:
+                pass
+
+        elif action == "click_nav":
+            # Click a navigation menu item
+            try:
+                nav_links = driver.find_elements(
+                    By.XPATH,
+                    "//a[contains(@href, '/b/') and @data-testid]"
+                    " | //nav//a[contains(@href, '/b/')]")
+                if nav_links:
+                    link = random.choice(nav_links[:10])
+                    human_click(driver, link)
+                    time.sleep(random.uniform(3, 6))
+                    simulate_human_behavior(
+                        driver, duration=random.uniform(5, 10))
+            except Exception:
+                pass
+
+        else:  # just_browse
+            simulate_human_behavior(
+                driver, duration=random.uniform(5, 10))
+
     except Exception:
         pass
+
+
+def _detect_ship_to_store(driver):
+    """Check if 'Ship to Store' fulfillment is available on the current HD page.
+    Returns True if the option exists and is not greyed out / unavailable."""
+    try:
+        # HD shows fulfillment options in the buy box area.
+        # "Ship to Store" appears as text in a fulfillment tile/pod.
+        sts_xpaths = [
+            "//*[contains(text(), 'Ship to Store')]",
+            "//*[contains(text(), 'ship to store')]",
+            "//*[contains(text(), 'Ship To Store')]",
+            "//*[@data-testid='fulfillment-ship-to-store']",
+        ]
+        for xpath in sts_xpaths:
+            elems = driver.find_elements(By.XPATH, xpath)
+            for elem in elems:
+                # Check it's not struck-through or inside an unavailable container
+                parent_html = elem.get_attribute("outerHTML") or ""
+                if "unavailable" in parent_html.lower():
+                    continue
+                if "line-through" in parent_html.lower():
+                    continue
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _detect_delivery_available(driver):
+    """Check if 'Delivery' or 'Schedule Delivery' is available."""
+    try:
+        delivery_xpaths = [
+            "//*[contains(text(), 'Delivery')]"
+            "[not(contains(text(), 'unavailable'))]",
+            "//*[contains(text(), 'Schedule')]"
+            "[not(contains(text(), 'unavailable'))]",
+        ]
+        for xpath in delivery_xpaths:
+            elems = driver.find_elements(By.XPATH, xpath)
+            for elem in elems:
+                txt = elem.text.strip().lower()
+                # Skip "Delivery unavailable" or similar
+                if "unavailable" in txt or "not available" in txt:
+                    continue
+                if "delivery" in txt or "schedule" in txt:
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def check_hd_item_tab_status(driver, name=''):
@@ -1086,13 +1492,19 @@ def check_hd_item_tab_status(driver, name=''):
     Does NOT perform navigation (driver.get).
     Simulates human browsing before reading the page to feed Akamai's
     sensor script with interaction data.
+
+    Returns one of:
+      PENNY_NEW   — $0.01 with Ship To Store or Delivery available
+      PENNY       — $0.01, fulfillment unknown or pickup-only
+      PENNY_OLD   — $0.01 but out of stock everywhere
+      NOT_PENNY   — normal priced item in stock
+      CLEARANCE   — clearance pricing shown
+      BLOCKED     — Akamai block detected
     """
     print(f"   > Verifying: {name[:25]}...")
 
     # Simulate human browsing the product page before checking anything.
-    # This feeds Akamai's sensor with mouse/scroll data so it doesn't
-    # flag the session as bot-like.
-    simulate_human_behavior(driver, duration=random.uniform(3, 6))
+    simulate_human_behavior(driver, duration=random.uniform(5, 12))
 
     # --- Stage 0: Immediate Block/Error Check ---
     if "Access Denied" in driver.title:
@@ -1113,7 +1525,6 @@ def check_hd_item_tab_status(driver, name=''):
         pickup_badges = driver.find_elements(
             By.XPATH, "//div[contains(@class, 'sui-font-bold') and contains(text(), 'Pickup')]")
         if pickup_badges:
-            # print(f"   > Normal stock found.")
             return HDStatus.NOT_PENNY
     except Exception:
         pass
@@ -1131,12 +1542,15 @@ def check_hd_item_tab_status(driver, name=''):
     time.sleep(1.5)
     driver.execute_script("window.scrollBy(0, -500);")
 
+    # --- Stage 1.5: Check fulfillment options for penny classification ---
+    has_ship_to_store = _detect_ship_to_store(driver)
+    has_delivery = _detect_delivery_available(driver)
+
     # --- Stage 2: Iframe Badge Check ---
     try:
         # 1. Open Store Overlay
         nearby_link = wait.until(
             EC.element_to_be_clickable((By.XPATH, "//a[@data-testid='check-nearby-stores']")))
-        # driver.execute_script("arguments[0].click();", nearby_link)
         human_click(driver, nearby_link)
         time.sleep(2)
 
@@ -1154,12 +1568,30 @@ def check_hd_item_tab_status(driver, name=''):
         # Switch back before returning
         driver.switch_to.default_content()
 
-        status = HDStatus.PENNY_CANDIDATE if len(badges) > 0 else HDStatus.PENNY
-        return status
+        if len(badges) > 0:
+            return HDStatus.PENNY_CANDIDATE
+
+        # It's a penny — classify by fulfillment availability
+        if has_ship_to_store or has_delivery:
+            return HDStatus.PENNY_NEW
+        return HDStatus.PENNY
 
     except Exception as e:
         driver.switch_to.default_content()  # Safety switch back
 
+    # Fell through — likely a penny item. Check if it's out of stock.
+    # Look for "Out of Stock" or "Unavailable" signals on the page.
+    try:
+        page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+        # If the page says out of stock and no fulfillment is available
+        if (("out of stock" in page_text or "currently unavailable" in page_text)
+                and not has_ship_to_store and not has_delivery):
+            return HDStatus.PENNY_OLD
+    except Exception:
+        pass
+
+    if has_ship_to_store or has_delivery:
+        return HDStatus.PENNY_NEW
     return HDStatus.PENNY
 
 
@@ -1585,10 +2017,11 @@ def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP, hd_login=False):
     # This is critical — the sensor collects mouse/scroll/timing data
     # and flags sessions with no human interaction as bots.
     print("   > Building sensor trust (browsing HD)...")
-    simulate_human_behavior(driver, duration=random.uniform(8, 15))
+    simulate_human_behavior(driver, duration=random.uniform(15, 30))
 
-    # Visit a category page to establish browsing pattern
-    browse_hd_homepage(driver)
+    # Visit 2-3 category pages to establish a natural browsing pattern
+    for _ in range(random.randint(2, 3)):
+        browse_hd_homepage(driver)
 
     print("   > HD session warm-up complete.")
     return True
@@ -1744,8 +2177,22 @@ def process_tracker_items(driver, deal_list, tsv_output_path):
                         clear_hd_cookies(driver)
                         driver.switch_to.window(main_window_handle)
                     if consecutive_blocks >= max_consecutive_blocks:
-                        print(f"!!! {max_consecutive_blocks} consecutive blocks. Stopping to avoid IP ban.")
-                        break
+                        print(f"\n!!! {max_consecutive_blocks} consecutive blocks.")
+                        print("   Waiting 60 minutes before resuming... "
+                              "(Ctrl+C to stop)")
+                        try:
+                            for minute in range(60):
+                                remaining = 60 - minute
+                                ts = datetime.datetime.now().strftime("%H:%M:%S")
+                                print(f"   [{ts}] Resuming in {remaining} min...",
+                                      end="\r")
+                                time.sleep(60)
+                            print()
+                        except KeyboardInterrupt:
+                            print("\n   Manually cancelled. Stopping.")
+                            break
+                        consecutive_blocks = 0
+                        continue
                     sleep_time = random.randint(60, 120)
                     print(f"   Sleeping {sleep_time}s before next item...")
                     time.sleep(sleep_time)
@@ -1972,14 +2419,73 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                         wait_menu = WebDriverWait(driver, 5)
                         wait_menu.until(EC.presence_of_element_located(
                             (By.CLASS_NAME, "close-menu-btn")))
-                        hd_link_elem = wait_menu.until(
-                            EC.presence_of_element_located((
-                                By.XPATH,
-                                "//div[contains(@class, "
-                                "'detail-overlay-content')]//a")))
-                        hd_url = hd_link_elem.get_attribute("href")
 
-                        # Read stock status
+                        # Find all store entries in the modal.
+                        # Each store has a link, stock status, and added date.
+                        # Pick the most recently added store.
+                        overlay = driver.find_element(
+                            By.XPATH,
+                            "//div[contains(@class, 'detail-overlay-content')]")
+                        all_links = overlay.find_elements(By.TAG_NAME, "a")
+
+                        # Try to find per-store rows/sections.
+                        # RebelSavings groups each store as a block with
+                        # link + status + date.  Look for common containers.
+                        store_rows = overlay.find_elements(
+                            By.XPATH,
+                            ".//*[contains(@class, 'store-row') or "
+                            "contains(@class, 'store-entry') or "
+                            "contains(@class, 'store-item') or "
+                            "contains(@class, 'detail-row')]")
+
+                        hd_url = ""
+                        best_date = None
+
+                        if len(store_rows) > 1:
+                            # Multiple store entries — pick newest
+                            for sr in store_rows:
+                                sr_text = sr.text
+                                sr_link = None
+                                try:
+                                    sr_link = sr.find_element(
+                                        By.TAG_NAME, "a"
+                                    ).get_attribute("href")
+                                except Exception:
+                                    continue
+                                # Parse date from the store row text
+                                sr_date = None
+                                for fmt in ("%b %d, %Y", "%m/%d/%Y",
+                                            "%Y-%m-%d"):
+                                    for token in re.findall(
+                                            r'[A-Z][a-z]+ \d{1,2}, \d{4}'
+                                            r'|\d{1,2}/\d{1,2}/\d{4}'
+                                            r'|\d{4}-\d{2}-\d{2}',
+                                            sr_text):
+                                        try:
+                                            sr_date = (
+                                                datetime.datetime.strptime(
+                                                    token, fmt))
+                                            break
+                                        except ValueError:
+                                            continue
+                                    if sr_date:
+                                        break
+                                if sr_link and (best_date is None
+                                                or (sr_date and sr_date
+                                                    > best_date)):
+                                    best_date = sr_date
+                                    hd_url = sr_link
+                        else:
+                            # Single store or no structured rows — use
+                            # the last link (most recently added is
+                            # typically appended last)
+                            if all_links:
+                                hd_url = all_links[-1].get_attribute("href")
+
+                        if not hd_url and all_links:
+                            hd_url = all_links[-1].get_attribute("href")
+
+                        # Read stock status across all stores
                         stock_elems = driver.find_elements(
                             By.XPATH,
                             "//div[contains(@class, 'detail-overlay-body')]"
@@ -2084,7 +2590,8 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         if not url or 'homedepot.com' not in url:
             continue
         # Always skip terminal statuses
-        if status in (HDStatus.PENNY, HDStatus.OUT_OF_STOCK):
+        if status in (HDStatus.PENNY_NEW, HDStatus.PENNY,
+                      HDStatus.PENNY_OLD, HDStatus.OUT_OF_STOCK):
             continue
         # Skip anything updated within the last 24 hours
         updated = deal.get('updated_at', '')
@@ -2184,7 +2691,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         batch_start = time.time()
 
         # Random batch size 1-10 for each batch
-        cur_batch_size = random.randint(1, 3)
+        cur_batch_size = random.randint(1, 10)
         batch = browser_queue[i:i + cur_batch_size]
         batch_num += 1
 
@@ -2233,10 +2740,6 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
 
         if not tab_map:
             print("   No tabs opened — skipping batch")
-            consecutive_blocks += 1
-            if consecutive_blocks >= 3:
-                print("   3 consecutive failed batches. Stopping.")
-                break
             i += cur_batch_size
             continue
 
@@ -2268,8 +2771,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 checked += 1
                 batch_checked += 1
 
-                if hd_status in (HDStatus.BLOCKED, HDStatus.FAILURE,
-                                 HDStatus.ERROR):
+                if hd_status == HDStatus.BLOCKED:
                     batch_blocked += 1
             except Exception as exc:
                 print(f"   Error reading tab for {name[:40]}: {exc}")
@@ -2281,15 +2783,42 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         # ── Save TSV after each batch ──────────────────────────────
         _save_tsv()
 
-        # ── Track consecutive failures ─────────────────────────────
-        if batch_checked == 0 or batch_blocked == len(tab_map):
+        # ── Track consecutive blocks (only BLOCKED status, not transient errors) ──
+        if batch_blocked > 0 and batch_blocked >= batch_checked:
             consecutive_blocks += 1
-            print(f"   Batch {batch_num}: all blocked/failed "
+            print(f"   Batch {batch_num}: blocked by Akamai "
                   f"({consecutive_blocks}/3)")
             if consecutive_blocks >= 3:
-                print("   3 consecutive blocked batches. Stopping.")
-                break
-        else:
+                # Clear cookies and wait 1 hour before resuming
+                print("\n   !!! 3 consecutive blocks detected.")
+                try:
+                    driver.delete_all_cookies()
+                    print("   Cleared all cookies.")
+                except Exception:
+                    pass
+                _save_tsv()
+                wait_mins = 60
+                print(f"   Waiting {wait_mins} minutes before resuming... "
+                      f"(Ctrl+C to stop)")
+                try:
+                    for minute in range(wait_mins):
+                        remaining = wait_mins - minute
+                        ts = datetime.datetime.now().strftime("%H:%M:%S")
+                        print(f"   [{ts}] Resuming in {remaining} min...",
+                              end="\r")
+                        time.sleep(60)
+                    print()
+                except KeyboardInterrupt:
+                    print("\n   Manually cancelled. Stopping.")
+                    break
+                consecutive_blocks = 0
+                # Warm up session again after cookie clear
+                print("   Warming up HD session...")
+                try:
+                    warm_up_hd_session(driver, zip_code=zip_code)
+                except Exception as e:
+                    print(f"   Warm-up failed: {e}")
+        elif batch_checked > 0:
             consecutive_blocks = 0
             # Browse HD homepage to build trust between batches
             try:
@@ -2312,6 +2841,8 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
             break
 
         target_interval = remaining_time / items_left_after
+        # Cap at 10 minutes — no point waiting longer between batches
+        target_interval = min(target_interval, 600)
         # Add ±30% jitter
         jitter = target_interval * random.uniform(-0.3, 0.3)
         pause = max(target_interval + jitter, 15)
@@ -2386,7 +2917,7 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
+            logging.FileHandler(log_path, mode="w", encoding="utf-8"),
             logging.StreamHandler(sys.stdout),
         ],
     )
@@ -2476,7 +3007,8 @@ def main():
             status = deal_row.get("hd_status", "")
 
             # Remove penny items older than 30 days
-            if status == HDStatus.PENNY and org_timestamp:
+            if status in (HDStatus.PENNY_NEW, HDStatus.PENNY,
+                          HDStatus.PENNY_OLD) and org_timestamp:
                 if not is_within_x_days(org_timestamp, now_ts, days=30):
                     removed_penny_old += 1
                     continue
