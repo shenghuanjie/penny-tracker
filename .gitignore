@@ -70,6 +70,9 @@ fb_cookies.json
 # skip profile
 hd_profile/*
 
+# FB image cache
+fb_images/
+
 # skip data files
 *.tsv
 *.csv

@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ import re
 import random
 import sys
 import time
+import urllib.request
 
 import undetected_chromedriver as uc
 from selenium import webdriver
@@ -17,13 +19,22 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
+try:
+    from PIL import Image
+    import pytesseract
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
+
 # ── Constants ──────────────────────────────────────────────────────────
-FB_GROUP_URL = "https://www.facebook.com/groups/4053530654966334/"
+FB_GROUP_URL = "https://www.facebook.com/groups/homedepotonecent"
 FB_TSV_FILENAME = "fb_deals.tsv"
 FB_FIELDNAMES = ["post_id", "post_date", "text_snippet", "skus", "upcs",
                  "hd_links", "images", "scraped_at", "padding"]
 ROW_SIZE = 2000
 TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+IMG_CACHE_DIR = "fb_images"
 
 DEFAULT_CHROME_PROFILE = "/Users/shengh4/Library/Application Support/Google/Chrome"
 DEFAULT_PROFILE_DIR = "Profile 1"
@@ -172,16 +183,21 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
                         (e.g. "localhost:9222"). Launch Chrome yourself with
                         --remote-debugging-port=9222 first.
     """
-    # --- Remote debugging: attach to existing Chrome ---
-    if remote_debug:
+    # --- Remote debugging: explicit flag or auto-detect ---
+    debug_addr = remote_debug
+    if not debug_addr and _is_port_open("localhost", 9222):
+        debug_addr = DEFAULT_REMOTE_DEBUG
+        logging.info("Auto-detected Chrome on port 9222 — attaching via remote debug")
+
+    if debug_addr:
         service = ChromeService(ChromeDriverManager().install())
-        host, port = remote_debug.split(":")
+        host, port = debug_addr.split(":")
         port = int(port)
         if not _is_port_open(host, port):
             _launch_chrome_debug(port, chrome_profile, profile_dir)
-        logging.info("Connecting to Chrome at %s via remote debugging", remote_debug)
+        logging.info("Connecting to Chrome at %s via remote debugging", debug_addr)
         options = webdriver.ChromeOptions()
-        options.debugger_address = remote_debug
+        options.debugger_address = debug_addr
         options.page_load_strategy = 'eager'
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(60)
@@ -325,6 +341,55 @@ def export_cookies(driver, cookie_file):
     with open(cookie_file, "w") as f:
         json.dump(cookies, f, indent=2)
     print(f"Cookies saved to {cookie_file}")
+
+
+# ── OCR ────────────────────────────────────────────────────────────────
+def _download_image(url, cache_dir=IMG_CACHE_DIR):
+    """Download an image and return the local path. Uses cache."""
+    os.makedirs(cache_dir, exist_ok=True)
+    fname = hashlib.md5(url.encode()).hexdigest() + ".jpg"
+    path = os.path.join(cache_dir, fname)
+    if os.path.isfile(path):
+        return path
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            with open(path, "wb") as f:
+                f.write(resp.read())
+        return path
+    except Exception as e:
+        logging.debug("Failed to download %s: %s", url, e)
+        return None
+
+
+def ocr_image(image_path):
+    """Run Tesseract OCR on an image and return extracted text."""
+    if not HAS_OCR:
+        return ""
+    try:
+        img = Image.open(image_path)
+        # Preprocess: convert to grayscale for better OCR accuracy
+        img = img.convert("L")
+        text = pytesseract.image_to_string(img)
+        return text
+    except Exception as e:
+        logging.debug("OCR failed for %s: %s", image_path, e)
+        return ""
+
+
+def ocr_post_images(image_urls, cache_dir=IMG_CACHE_DIR):
+    """Download and OCR all images from a post. Returns combined text."""
+    if not HAS_OCR or not image_urls:
+        return ""
+    texts = []
+    for url in image_urls[:5]:  # max 5 images per post
+        path = _download_image(url, cache_dir)
+        if path:
+            text = ocr_image(path)
+            if text.strip():
+                texts.append(text)
+    return "\n".join(texts)
 
 
 # ── Text Extraction ───────────────────────────────────────────────────
@@ -533,11 +598,18 @@ def scrape_posts(driver, max_posts=50, max_days=7):
 
                 # Combine text and links for extraction
                 full_text = post_text + "\n" + "\n".join(post_links)
+                images = get_post_images(article)
+
+                # OCR images for SKUs/UPCs in receipts and shelf tags
+                ocr_text = ocr_post_images(images)
+                if ocr_text:
+                    full_text += "\n" + ocr_text
+                    logging.info("  OCR extracted %d chars from %d images",
+                                 len(ocr_text), len(images))
 
                 skus = extract_skus(full_text)
                 upcs = extract_upcs(full_text)
                 hd_links = extract_hd_links(full_text) or list(post_links)
-                images = get_post_images(article)
 
                 # Only save posts that have relevant deal info
                 if skus or upcs or hd_links:
@@ -657,7 +729,7 @@ def generate_fb_html(deals, output_path):
         .date { white-space: nowrap; color: #888; }
     </style></head><body>
     <h2>Facebook Group Deals</h2>
-    <p>Source: <a href="https://www.facebook.com/groups/4053530654966334/"
+    <p>Source: <a href="https://www.facebook.com/groups/homedepotonecent"
        target="_blank">HD Penny Deals Group</a>
        | Items: """ + str(len(deals)) + """
        | Updated: """ + datetime.datetime.now().strftime("%Y-%m-%d %H:%M") + """</p>
@@ -761,7 +833,7 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
+            logging.FileHandler(log_path, mode="w", encoding="utf-8"),
             logging.StreamHandler(sys.stdout),
         ],
     )
@@ -863,7 +935,9 @@ def main():
         generate_fb_html(merged, report_path)
 
     finally:
-        driver.quit()
+        # Don't quit if attached to user's Chrome via remote debug
+        if not (args.remote_debug or _is_port_open("localhost", 9222)):
+            driver.quit()
         print("Done.")
 
 
