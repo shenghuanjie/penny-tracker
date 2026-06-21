@@ -145,12 +145,39 @@ def simulate_human_behavior(driver, duration=None):
 
 def human_click(driver, element):
     """
-    Robust clicker for Selenium 4.9.
-    Calculates the 'Visual Center' of a zoomed element to ensure the click hits.
+    Robust clicker. Calculates the 'Visual Center' of a zoomed element.
+    Includes rendering enforcement to prevent 'no size and location' errors.
     """
     try:
+        # --- 0. ENFORCE RENDERING ---
+        # Force the element into the viewport to trigger lazy-loading
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
+                              element)
+        time.sleep(random.uniform(0.3, 0.7))  # Give React a moment to paint the dimensions
+
+        rect = element.rect
+
+        # If still 0x0, the <a> might be a logical wrapper. Look for a visible child.
+        if rect['width'] == 0 or rect['height'] == 0:
+            try:
+                # Find the first child (usually an img or div) that actually has size
+                visible_child = driver.execute_script("""
+                    for (let child of arguments[0].querySelectorAll('*')) {
+                        let bounds = child.getBoundingClientRect();
+                        if (bounds.width > 0 && bounds.height > 0) return child;
+                    }
+                    return null;
+                """, element)
+
+                if visible_child:
+                    element = visible_child
+                    rect = element.rect
+                else:
+                    raise ValueError("Element and all children have 0x0 dimensions.")
+            except Exception as e:
+                raise ValueError(f"Could not resolve 0x0 dimensions: {e}")
+
         # --- 1. DETECT ZOOM LEVEL ---
-        # Get the CSS zoom value (e.g., "0.75" or "75%")
         zoom_style = element.value_of_css_property("zoom")
         zoom_factor = 1.0
 
@@ -158,57 +185,41 @@ def human_click(driver, element):
             clean_zoom = zoom_style.strip().replace('%', '')
             try:
                 val = float(clean_zoom)
-                # Normalize: 75 -> 0.75, 0.75 -> 0.75
                 zoom_factor = val / 100.0 if val > 1 else val
             except ValueError:
                 pass
 
         # --- 2. CALCULATE VISUAL TARGET ---
-        # Selenium sees the "Logical Size" (e.g., 100px).
-        # We need the "Visual Size" (e.g., 75px).
-        rect = element.rect # .rect gets {'x':, 'y':, 'width':, 'height':}
-
         logical_width = rect['width']
         logical_height = rect['height']
 
-        # The visual box is smaller/larger based on zoom
         visual_width = logical_width * zoom_factor
         visual_height = logical_height * zoom_factor
 
         # --- 3. CALCULATE OFFSET (Relative to Top-Left) ---
-        # We want to click the Center of the VISUAL box, not the logical box.
         center_x = visual_width / 2
         center_y = visual_height / 2
 
-        # Add small random jitter (approx 10% of size)
         jitter_x = random.randint(-int(visual_width * 0.1), int(visual_width * 0.1))
         jitter_y = random.randint(-int(visual_height * 0.1), int(visual_height * 0.1))
 
-        # Final Target relative to the element's Top-Left corner
-        target_x = int(center_x + jitter_x)
-        target_y = int(center_y + jitter_y)
-
-        # Safety: Ensure we don't accidentally jitter outside the visual box
-        target_x = max(1, min(target_x, int(visual_width) - 1))
-        target_y = max(1, min(target_y, int(visual_height) - 1))
+        target_x = max(1, min(int(center_x + jitter_x), int(visual_width) - 1))
+        target_y = max(1, min(int(center_y + jitter_y), int(visual_height) - 1))
 
         # --- 4. EXECUTE MOVE & CLICK ---
         actions = ActionChains(driver)
-
-        # This moves to the top-left of the element, then shifts by our calculated pixels
         actions.move_to_element_with_offset(element, target_x, target_y)
-
-        time.sleep(random.uniform(0.1, 0.3)) # Human hesitation
+        time.sleep(random.uniform(0.1, 0.3))
         actions.click()
         actions.perform()
 
-        wait = WebDriverWait(driver, 5)
-        wait.until(EC.number_of_windows_to_be(2))
+        # Optional: wait for new window if your script expects a new tab
+        # wait = WebDriverWait(driver, 5)
+        # wait.until(EC.number_of_windows_to_be(2))
 
     except Exception as e:
         print(f"Human click failed: {e}")
         print("Engaging Backup: Force JS Click")
-        # 100% Reliable Backup (Does not use mouse, just fires event)
         driver.execute_script("arguments[0].click();", element)
 
 
