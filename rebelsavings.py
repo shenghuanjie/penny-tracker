@@ -2537,10 +2537,19 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                         orig_ts = added_date.strftime(TIMESTAMP_FORMAT)
                     else:
                         orig_ts = now
+                    # Only set updated_at for definitive HD statuses.
+                    # Leave it blank for unchecked items so Phase 2 won't
+                    # think they were recently checked and skip them.
+                    definitive_statuses = (
+                        HDStatus.PENNY_NEW, HDStatus.PENNY, HDStatus.NOT_PENNY,
+                        HDStatus.PENNY_CANDIDATE, HDStatus.CLEARANCE,
+                        HDStatus.PENNY_OLD, HDStatus.OUT_OF_STOCK,
+                    )
+                    p1_updated_at = now if hd_status in definitive_statuses else ""
                     current_deal = {
                         "name": name, "price": price, "url": hd_url,
                         "image": img_url, "original_timestamp": orig_ts,
-                        "hd_status": hd_status, "updated_at": now,
+                        "hd_status": hd_status, "updated_at": p1_updated_at,
                         "padding": ""
                     }
                     print(pad_row(current_deal), file=f_out)
@@ -2604,16 +2613,18 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         if status in (HDStatus.PENNY_NEW, HDStatus.PENNY,
                       HDStatus.PENNY_OLD, HDStatus.OUT_OF_STOCK):
             continue
-        # Skip anything updated within the last 24 hours
-        updated = deal.get('updated_at', '')
-        if updated and is_within_x_days(now_ts, updated, 1):
-            skipped_24h += 1
-            continue
         # Normal mode: only unchecked items
         # Recheck mode: also include blocked/error/failure
         if status and status != 'unchecked':
             if not (recheck and status in (HDStatus.BLOCKED, HDStatus.ERROR,
                                            HDStatus.FAILURE)):
+                continue
+        # Skip already-checked items updated within the last 24 hours
+        # (unchecked items should always be checked regardless of updated_at)
+        if status and status != 'unchecked':
+            updated = deal.get('updated_at', '')
+            if updated and is_within_x_days(now_ts, updated, 1):
+                skipped_24h += 1
                 continue
         to_check.append((i, deal))
 
@@ -2776,7 +2787,16 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 now = datetime.datetime.fromtimestamp(
                     time.time()).strftime(TIMESTAMP_FORMAT)
                 deal_list[idx]['hd_status'] = hd_status
-                deal_list[idx]['updated_at'] = now
+                # Only update updated_at for definitive results.
+                # Blocked/error/failure leave it unchanged so the item
+                # stays eligible to be re-checked next time.
+                definitive_statuses = (
+                    HDStatus.PENNY_NEW, HDStatus.PENNY, HDStatus.NOT_PENNY,
+                    HDStatus.PENNY_CANDIDATE, HDStatus.CLEARANCE,
+                    HDStatus.PENNY_OLD, HDStatus.OUT_OF_STOCK,
+                )
+                if hd_status in definitive_statuses:
+                    deal_list[idx]['updated_at'] = now
                 print(f"   Result: {name[:50]} → {hd_status.upper()}")
                 _log_item(batch_num, len(batch), name, hd_status, hd_url)
                 checked += 1
@@ -3017,17 +3037,14 @@ def main():
             org_timestamp = deal_row.get("original_timestamp", "")
             status = deal_row.get("hd_status", "")
 
-            # Remove penny items older than 30 days
-            if status in (HDStatus.PENNY_NEW, HDStatus.PENNY,
-                          HDStatus.PENNY_OLD) and org_timestamp:
-                if not is_within_x_days(org_timestamp, now_ts, days=30):
-                    removed_penny_old += 1
-                    continue
-
-            # Remove all items older than 60 days
+            # Remove all items older than 21 days (3 weeks)
             if org_timestamp and not is_within_x_days(
-                    org_timestamp, now_ts, days=60):
-                removed_old += 1
+                    org_timestamp, now_ts, days=21):
+                if status in (HDStatus.PENNY_NEW, HDStatus.PENNY,
+                               HDStatus.PENNY_OLD):
+                    removed_penny_old += 1
+                else:
+                    removed_old += 1
                 continue
 
             # Deduplicate by name
@@ -3041,8 +3058,8 @@ def main():
         total_removed = removed_old + removed_penny_old + removed_dup
         if total_removed > 0:
             print(f"Cleaned {total_removed} items: "
-                  f"{removed_penny_old} penny >30d, "
-                  f"{removed_old} other >60d, "
+                  f"{removed_penny_old} penny >21d, "
+                  f"{removed_old} other >21d, "
                   f"{removed_dup} duplicates.")
             shutil.copyfile(args.from_tsv, backuptsv_output_path)
             deal_list = new_deal_list
