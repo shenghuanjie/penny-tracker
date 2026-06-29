@@ -380,10 +380,12 @@ def generate_html_report(deals, output_path):
         url = d.get('url', '#')
         updated = d.get('updated_at', '')
         added = d.get('original_timestamp', '')
+        sku = extract_sku_from_url(url) if url and url != '#' else ''
 
         rows_html += f"""<tr data-idx="{idx}">
             <td><img src="{image_src}" loading="lazy"></td>
             <td>{name}</td>
+            <td class="sku">{sku}</td>
             <td>{price}</td>
             <td class="{status}">{status.upper()}</td>
             <td>{updated}</td>
@@ -507,10 +509,11 @@ def generate_html_report(deals, output_path):
     <thead><tr>
         <th>Image</th>
         <th onclick="sortTable(1)">Name <span class="arrow"></span></th>
-        <th onclick="sortTable(2)">Price <span class="arrow"></span></th>
-        <th onclick="sortTable(3)">Status <span class="arrow"></span></th>
-        <th onclick="sortTable(4)">Updated <span class="arrow"></span></th>
-        <th onclick="sortTable(5)">Added <span class="arrow"></span></th>
+        <th onclick="sortTable(2)">SKU <span class="arrow"></span></th>
+        <th onclick="sortTable(3)">Price <span class="arrow"></span></th>
+        <th onclick="sortTable(4)">Status <span class="arrow"></span></th>
+        <th onclick="sortTable(5)">Updated <span class="arrow"></span></th>
+        <th onclick="sortTable(6)">Added <span class="arrow"></span></th>
         <th>Link</th>
     </tr></thead>
     <tbody>
@@ -891,6 +894,31 @@ def extract_sku_from_url(hd_url):
     if match:
         return match.group(1)
     return None
+
+
+def extract_sku_from_hd_page(driver):
+    """Extract the product SKU from the current Home Depot product page.
+
+    HD displays 'Internet # XXXXXXXXX' in the corner of every product page
+    (next to the product title / specifications area). This is the definitive
+    SKU — more reliable than parsing it from a redirect URL.
+
+    Falls back to parsing driver.current_url if the page text is unavailable.
+    """
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+        # "Internet # 316822811" or "Internet #316822811"
+        m = re.search(r'Internet\s*#\s*(\d{6,12})', body_text)
+        if m:
+            return m.group(1)
+        # "Store SKU # 1000847930"
+        m = re.search(r'Store\s+SKU\s*#?\s*(\d{6,12})', body_text)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    # Fallback: parse from the current URL
+    return extract_sku_from_url(driver.current_url)
 
 
 _USER_AGENTS = [
@@ -2423,13 +2451,23 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                     # Open modal to get HD URL and stock status
                     driver.execute_script(
                         "arguments[0].scrollIntoView({block: 'center'});", row)
-                    time.sleep(random.uniform(0.3, 0.6))
+                    # Human-like pause — simulate reading the row before clicking
+                    time.sleep(random.uniform(0.8, 2.5))
+                    # Occasionally hover over the row briefly before clicking
+                    if random.random() < 0.4:
+                        try:
+                            ActionChains(driver).move_to_element(row).perform()
+                            time.sleep(random.uniform(0.3, 0.8))
+                        except Exception:
+                            pass
                     driver.execute_script("arguments[0].click();", row)
 
                     try:
-                        wait_menu = WebDriverWait(driver, 5)
+                        wait_menu = WebDriverWait(driver, 8)
                         wait_menu.until(EC.presence_of_element_located(
                             (By.CLASS_NAME, "close-menu-btn")))
+                        # Pause to "read" the modal like a real person would
+                        time.sleep(random.uniform(1.5, 4.0))
 
                         # Find all store entries in the modal.
                         # Each store has a link, stock status, and added date.
@@ -2453,15 +2491,19 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                         best_date = None
 
                         if len(store_rows) > 1:
-                            # Multiple store entries — pick newest
+                            # Multiple store entries — pick newest HD link
                             for sr in store_rows:
                                 sr_text = sr.text
                                 sr_link = None
                                 try:
-                                    sr_link = sr.find_element(
-                                        By.TAG_NAME, "a"
-                                    ).get_attribute("href")
+                                    for a in sr.find_elements(By.TAG_NAME, "a"):
+                                        href = a.get_attribute("href") or ""
+                                        if "homedepot.com" in href:
+                                            sr_link = href
+                                            break
                                 except Exception:
+                                    continue
+                                if not sr_link:
                                     continue
                                 # Parse date from the store row text
                                 sr_date = None
@@ -2487,14 +2529,42 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                                     best_date = sr_date
                                     hd_url = sr_link
                         else:
-                            # Single store or no structured rows — use
-                            # the last link (most recently added is
-                            # typically appended last)
-                            if all_links:
-                                hd_url = all_links[-1].get_attribute("href")
+                            # Single store or no structured rows — pick the
+                            # first homedepot.com link (ignore Maps links)
+                            for a in all_links:
+                                href = a.get_attribute("href") or ""
+                                if "homedepot.com" in href:
+                                    hd_url = href
+                                    break
 
-                        if not hd_url and all_links:
-                            hd_url = all_links[-1].get_attribute("href")
+                        if not hd_url:
+                            # Last resort: scan all links for any HD URL
+                            for a in all_links:
+                                href = a.get_attribute("href") or ""
+                                if "homedepot.com" in href:
+                                    hd_url = href
+                                    break
+
+                        if not hd_url:
+                            # No HD link found at all — try to extract the
+                            # model/SKU number from the overlay text and
+                            # construct the HD URL directly.
+                            # RebelSavings shows the model # in the detail
+                            # body (e.g. "Model # 123456789").
+                            overlay_text = overlay.text
+                            sku_match = re.search(
+                                r'[Mm]odel\s*#?\s*(\d{6,12})'
+                                r'|[Ss][Kk][Uu]\s*#?\s*(\d{6,12})'
+                                r'|[Ii]tem\s*#?\s*(\d{6,12})',
+                                overlay_text)
+                            if sku_match:
+                                extracted_sku = next(
+                                    g for g in sku_match.groups() if g)
+                                hd_url = (
+                                    f"https://www.homedepot.com/p/"
+                                    f"{extracted_sku}/{extracted_sku}")
+                                print(f"   SKU from overlay text: "
+                                      f"{extracted_sku} → {hd_url}")
 
                         # Read stock status across all stores
                         stock_elems = driver.find_elements(
@@ -2564,6 +2634,18 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                     status_str = hd_status.upper() if hd_status else "UNCHECKED"
                     print(f"  [{items_collected}] {name[:55]} "
                           f"{stock_str} → {status_str}")
+
+                    # Periodic human-like breaks: pause every 5-15 items
+                    if items_collected % random.randint(5, 15) == 0:
+                        pause_secs = random.uniform(4, 12)
+                        print(f"   [human pause: {pause_secs:.0f}s]")
+                        # Scroll around a little to look human
+                        driver.execute_script(
+                            "window.scrollBy(0, %d);" % random.randint(200, 600))
+                        time.sleep(pause_secs / 2)
+                        driver.execute_script(
+                            "window.scrollBy(0, %d);" % -random.randint(100, 300))
+                        time.sleep(pause_secs / 2)
 
                 except Exception as e:
                     close_modal(driver)
@@ -2751,6 +2833,18 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 new_tab = driver.window_handles[-1]
                 driver.switch_to.window(new_tab)
                 nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
+                # Capture the real canonical HD URL (HD redirects to the full
+                # /p/ProductName/XXXXXXXXXX URL which contains the true SKU)
+                if nav_ok:
+                    try:
+                        canonical_url = driver.current_url
+                        if ("homedepot.com/p/" in canonical_url
+                                and canonical_url != hd_url):
+                            deal_list[idx]['url'] = canonical_url
+                            hd_url = canonical_url
+                            print(f"   URL updated: …{canonical_url[-30:]}")
+                    except Exception:
+                        pass
                 tab_map.append((idx, deal, new_tab, nav_ok))
                 print(f"   Opened: {name[:55]}"
                       f" {'✅' if nav_ok else '❌'}")
@@ -2780,6 +2874,15 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 driver.switch_to.window(tab_handle)
                 if nav_ok:
                     time.sleep(random.uniform(1, 2))
+                    # Extract the real SKU from the page text ("Internet # XXXXXXX")
+                    # and update the stored URL so the HTML report shows the correct SKU.
+                    page_sku = extract_sku_from_hd_page(driver)
+                    if page_sku:
+                        canonical = (f"https://www.homedepot.com/p/"
+                                     f"{page_sku}/{page_sku}")
+                        if deal_list[idx]['url'] != canonical:
+                            deal_list[idx]['url'] = canonical
+                            print(f"   SKU from page: {page_sku}")
                     hd_status = check_hd_item_tab_status(driver, name=name)
                 else:
                     hd_status = HDStatus.FAILURE
