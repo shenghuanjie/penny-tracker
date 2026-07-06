@@ -897,27 +897,30 @@ def extract_sku_from_url(hd_url):
 
 
 def extract_sku_from_hd_page(driver):
-    """Extract the product SKU from the current Home Depot product page.
+    """Extract the in-store SKU from the current Home Depot product page.
 
-    HD displays 'Internet # XXXXXXXXX' in the corner of every product page
-    (next to the product title / specifications area). This is the definitive
-    SKU — more reliable than parsing it from a redirect URL.
+    HD displays 'Store SKU # XXXXXXXXXX' in the corner of every product page.
+    That is the actual in-store SKU (e.g. 1000847930) used on shelf tags and
+    receipts.  'Internet # XXXXXXXXX' is the URL item-ID — different number.
 
-    Falls back to parsing driver.current_url if the page text is unavailable.
+    Priority:
+      1. Store SKU # XXXXXXXXXX  ← in-store SKU (what we want)
+      2. Internet # XXXXXXXXX    ← URL item ID (fallback)
+      3. Parse driver.current_url
     """
     try:
         body_text = driver.find_element(By.TAG_NAME, "body").text
-        # "Internet # 316822811" or "Internet #316822811"
-        m = re.search(r'Internet\s*#\s*(\d{6,12})', body_text)
+        # "Store SKU # 1000847930" or "Store SKU #1000847930"
+        m = re.search(r'Store\s+SKU\s*#?\s*(\d{6,12})', body_text)
         if m:
             return m.group(1)
-        # "Store SKU # 1000847930"
-        m = re.search(r'Store\s+SKU\s*#?\s*(\d{6,12})', body_text)
+        # "Internet # 316822811" — URL item ID, weaker fallback
+        m = re.search(r'Internet\s*#\s*(\d{6,12})', body_text)
         if m:
             return m.group(1)
     except Exception:
         pass
-    # Fallback: parse from the current URL
+    # Last resort: parse from the current URL
     return extract_sku_from_url(driver.current_url)
 
 
@@ -2566,24 +2569,38 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                                 print(f"   SKU from overlay text: "
                                       f"{extracted_sku} → {hd_url}")
 
-                        # Read stock status across all stores
-                        stock_elems = driver.find_elements(
-                            By.XPATH,
-                            "//div[contains(@class, 'detail-overlay-body')]"
-                            "//*[contains(@class, 'status-instock') or "
-                            "contains(@class, 'status-limited') or "
-                            "contains(@class, 'status-outofstock') or "
-                            "contains(@class, 'instock')]")
-                        in_stock = 0
-                        oos = 0
-                        for elem in stock_elems:
-                            cls = elem.get_attribute("class") or ""
-                            txt = elem.text.lower()
-                            if "outofstock" in cls or "out of stock" in txt:
-                                oos += 1
-                            elif ("instock" in cls or "limited" in cls
-                                  or "in stock" in txt or "left" in txt):
-                                in_stock += 1
+                        # Read stock status from the overlay text.
+                        # CSS class names on RebelSavings change frequently,
+                        # so use plain-text search on the overlay content.
+                        overlay_text_raw = overlay.text
+                        overlay_lower = overlay_text_raw.lower()
+
+                        # Count "out of stock" mentions
+                        oos = overlay_lower.count("out of stock")
+                        # Count "in stock" / "X left" / "limited" mentions
+                        in_stock = (overlay_lower.count("in stock")
+                                    + len(re.findall(r'\d+\s+left', overlay_lower))
+                                    + overlay_lower.count("limited"))
+                        # Also try CSS classes as a supplement
+                        try:
+                            oos_elems = overlay.find_elements(
+                                By.XPATH,
+                                ".//*[contains(@class,'outofstock') or "
+                                "contains(@class,'out-of-stock') or "
+                                "contains(@class,'status-oos')]")
+                            in_elems = overlay.find_elements(
+                                By.XPATH,
+                                ".//*[contains(@class,'instock') or "
+                                "contains(@class,'in-stock') or "
+                                "contains(@class,'status-instock') or "
+                                "contains(@class,'limited')]")
+                            oos = max(oos, len(oos_elems))
+                            in_stock = max(in_stock, len(in_elems))
+                        except Exception:
+                            pass
+
+                        print(f"   Modal stock: {in_stock} in-stock, "
+                              f"{oos} OOS | url={'...' + hd_url[-30:] if hd_url else 'none'}")
 
                         close_modal(driver)
                         time.sleep(random.uniform(0.2, 0.4))
@@ -2593,11 +2610,15 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                         oos = 0
                         close_modal(driver)
 
-                    # Determine initial status (no HD check yet)
-                    if in_stock == 0 and oos > 0:
+                    # Phase 1 uses RebelSavings modal text as a hint only.
+                    # If the modal shows OOS with NO in-stock stores at all,
+                    # mark it so Phase 2 can skip it unless --recheck is used.
+                    # If there's ANY in-stock signal, leave it unchecked so
+                    # Phase 2 always visits it.
+                    if oos > 0 and in_stock == 0:
                         hd_status = HDStatus.OUT_OF_STOCK
                     else:
-                        hd_status = ""  # unchecked
+                        hd_status = ""  # unchecked → Phase 2 will check HD
 
                     now = datetime.datetime.fromtimestamp(
                         time.time()).strftime(TIMESTAMP_FORMAT)
