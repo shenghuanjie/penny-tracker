@@ -9,6 +9,7 @@ import time
 import os
 import argparse
 import random
+from urllib.parse import quote_plus
 
 import undetected_chromedriver as uc
 from selenium import webdriver
@@ -1078,12 +1079,15 @@ def _is_github_pages_fresh(driver, max_age_minutes=10):
 def navigate_hd_via_github_pages(driver, hd_url, name=''):
     """Navigate to an HD product page by clicking its link on the GitHub
     Pages report.  This gives a legitimate Referer from github.io.
-    Skips if the report is stale (>10 minutes old)."""
-    sku = extract_sku_from_url(hd_url)
-    if not sku:
+    Skips if the report is stale (>10 minutes old).
+
+    Matches the row by product NAME (not the URL number) because the number
+    in the URL is the Internet #, which is unreliable for lookup.
+    """
+    if not name:
         return False
 
-    print(f"   > GitHub Pages click-through for SKU: {sku}")
+    print(f"   > GitHub Pages click-through for: {name[:45]}")
     try:
         tabs_before = set(driver.window_handles)
         driver.get(GITHUB_PAGES_URL)
@@ -1093,9 +1097,13 @@ def navigate_hd_via_github_pages(driver, hd_url, name=''):
         if not _is_github_pages_fresh(driver):
             return False
 
-        # Find the HD link that contains this SKU
+        # Find the table row whose text matches the product name, then click
+        # the Home Depot link inside that row.
         wait = WebDriverWait(driver, 12)
-        xpath = f"//a[contains(@href, 'homedepot.com') and contains(@href, '{sku}')]"
+        # Escape quotes in the name for the XPath string literal
+        safe_name = name.replace('"', '')[:60]
+        xpath = (f"//tr[td[contains(normalize-space(.), \"{safe_name}\")]]"
+                 f"//a[contains(@href, 'homedepot.com')]")
         try:
             link = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
             driver.execute_script(
@@ -1116,34 +1124,44 @@ def navigate_hd_via_github_pages(driver, hd_url, name=''):
             if not is_hd_blocked(driver):
                 return True
             else:
-                print(f"   > Blocked after GitHub Pages click-through")
+                print("   > Blocked after GitHub Pages click-through")
         except Exception:
-            print(f"   > SKU {sku} not found on GitHub Pages report")
+            print(f"   > '{name[:40]}' not found on GitHub Pages report")
     except Exception as e:
         print(f"   > GitHub Pages navigation failed: {e}")
     return False
 
 
 def navigate_hd_via_google(driver, hd_url, name=''):
-    """Navigate to an HD product page via Google search click-through."""
-    sku = extract_sku_from_url(hd_url)
-    if not sku:
-        print(f"   > Could not extract SKU from URL: {hd_url}")
+    """Navigate to an HD product page via Google search click-through.
+    Searches by product NAME (the URL number is the unreliable Internet #)."""
+    if not name:
         return False
 
-    print(f"   > Google search for HD SKU: {sku}")
+    print(f"   > Google search for: {name[:45]}")
 
     try:
-        query = f"site:homedepot.com {sku}"
+        query = quote_plus(f"site:homedepot.com {name}")
         driver.get(f"https://www.google.com/search?q={query}")
         time.sleep(random.uniform(3, 5))
 
-        # Check for CAPTCHA / robot detection
-        page_text = driver.page_source.lower()
-        if ("unusual traffic" in page_text or "captcha" in page_text
-                or "recaptcha" in page_text
-                or "sorry/index" in driver.current_url):
-            print(f"   > Google robot detection triggered, skipping")
+        # Check for CAPTCHA / robot detection.
+        # Only trust strong signals: the /sorry/ redirect URL, or a visible
+        # "unusual traffic" banner. Do NOT scan page_source for "captcha"/
+        # "recaptcha" — those strings appear in benign inline scripts on
+        # normal Google result pages and cause false positives.
+        cur = driver.current_url.lower()
+        if "google.com/sorry" in cur or "/sorry/index" in cur:
+            print("   > Google robot detection triggered, skipping")
+            return False
+        try:
+            body_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+        except Exception:
+            body_text = ""
+        if ("unusual traffic" in body_text
+                or "not a robot" in body_text
+                or "systems have detected" in body_text):
+            print("   > Google robot detection triggered, skipping")
             return False
 
         wait = WebDriverWait(driver, 10)
@@ -1172,15 +1190,15 @@ def navigate_hd_via_google(driver, hd_url, name=''):
 
 
 def navigate_hd_via_duckduckgo(driver, hd_url, name=''):
-    """Navigate to an HD product page via DuckDuckGo search click-through."""
-    sku = extract_sku_from_url(hd_url)
-    if not sku:
+    """Navigate to an HD product page via DuckDuckGo search click-through.
+    Searches by product NAME (the URL number is the unreliable Internet #)."""
+    if not name:
         return False
 
-    print(f"   > DuckDuckGo search for HD SKU: {sku}")
+    print(f"   > DuckDuckGo search for: {name[:45]}")
 
     try:
-        query = f"site:homedepot.com {sku}"
+        query = quote_plus(f"site:homedepot.com {name}")
         driver.get(f"https://duckduckgo.com/?q={query}")
         time.sleep(random.uniform(3, 5))
 
@@ -1210,15 +1228,15 @@ def navigate_hd_via_duckduckgo(driver, hd_url, name=''):
 
 
 def navigate_hd_via_bing(driver, hd_url, name=''):
-    """Navigate to an HD product page via Bing search click-through."""
-    sku = extract_sku_from_url(hd_url)
-    if not sku:
+    """Navigate to an HD product page via Bing search click-through.
+    Searches by product NAME (the URL number is the unreliable Internet #)."""
+    if not name:
         return False
 
-    print(f"   > Bing search for HD SKU: {sku}")
+    print(f"   > Bing search for: {name[:45]}")
 
     try:
-        query = f"site:homedepot.com {sku}"
+        query = quote_plus(f"site:homedepot.com {name}")
         driver.get(f"https://www.bing.com/search?q={query}")
         time.sleep(random.uniform(3, 5))
 
@@ -1247,10 +1265,11 @@ def navigate_hd_via_bing(driver, hd_url, name=''):
     return False
 
 
-def navigate_hd_via_site_search(driver, sku):
+def navigate_hd_via_site_search(driver, query_text):
     """
-    Fallback: search for a product SKU using HD's on-site search bar.
-    Only used when Google click-through fails.
+    Fallback: search for a product using HD's on-site search bar.
+    *query_text* can be a SKU or a product name.
+    Only used when search-engine click-through fails.
     """
     try:
         # Navigate to HD homepage if not already there
@@ -1259,31 +1278,78 @@ def navigate_hd_via_site_search(driver, sku):
             time.sleep(random.uniform(4, 7))
 
         if is_hd_blocked(driver):
-            print(f"   > Blocked on HD homepage")
+            print("   > Blocked on HD homepage")
             return False
 
         wait = WebDriverWait(driver, 15)
 
-        search_box = wait.until(EC.presence_of_element_located(
-            (By.ID, "typeahead-search-field-input")))
+        # HD's search input id changes occasionally — try a few selectors
+        search_box = None
+        for by, sel in [
+            (By.ID, "typeahead-search-field-input"),
+            (By.XPATH, "//input[@data-testid='header-search-input']"),
+            (By.XPATH, "//input[@type='search']"),
+            (By.XPATH, "//input[@id='headerSearch']"),
+        ]:
+            try:
+                search_box = wait.until(
+                    EC.presence_of_element_located((by, sel)))
+                if search_box:
+                    break
+            except Exception:
+                continue
 
-        search_box.click()
+        if not search_box:
+            print("   > HD search box not found")
+            return False
+
+        # Focus + clear + type via JS to avoid 'element not interactable'
+        # and the empty-message stale-element crashes from send_keys.
+        try:
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});", search_box)
+            search_box.click()
+        except Exception:
+            pass
+        time.sleep(random.uniform(0.4, 0.9))
+
+        typed = False
+        try:
+            # Human-like typing (preferred for the Akamai sensor)
+            search_box.send_keys(Keys.CONTROL + "a")
+            search_box.send_keys(Keys.BACKSPACE)
+            for char in str(query_text):
+                search_box.send_keys(char)
+                time.sleep(random.uniform(0.05, 0.15))
+            typed = True
+        except Exception:
+            # JS fallback: set the value and dispatch input events
+            try:
+                driver.execute_script("""
+                    var el = arguments[0];
+                    var v = arguments[1];
+                    var setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value').set;
+                    setter.call(el, v);
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                """, search_box, str(query_text))
+                typed = True
+            except Exception as js_exc:
+                print(f"   > Could not type in HD search box: {js_exc}")
+                return False
+
         time.sleep(random.uniform(0.5, 1.0))
-
-        # Clear existing text
-        search_box.send_keys(Keys.CONTROL + "a")
-        time.sleep(0.1)
-        search_box.send_keys(Keys.BACKSPACE)
-        time.sleep(random.uniform(0.3, 0.6))
-
-        # Type the SKU human-like
-        for char in sku:
-            search_box.send_keys(char)
-            time.sleep(random.uniform(0.05, 0.15))
-
-        time.sleep(random.uniform(0.5, 1.0))
-        search_box.send_keys(Keys.ENTER)
+        # Submit — try ENTER, then fall back to navigating the search URL
+        try:
+            search_box.send_keys(Keys.ENTER)
+        except Exception:
+            driver.get("https://www.homedepot.com/s/"
+                       + quote_plus(str(query_text)))
         time.sleep(random.uniform(4, 7))
+
+        if not typed:
+            return False
 
         if is_hd_blocked(driver):
             return False
@@ -1296,7 +1362,8 @@ def navigate_hd_via_site_search(driver, sku):
                 driver.execute_script("arguments[0].click();", product_link)
                 time.sleep(random.uniform(3, 5))
             except Exception:
-                print(f"   > No product found in HD search results for SKU: {sku}")
+                print("   > No product found in HD search "
+                      f"results for: {query_text}")
                 return False
 
         return not is_hd_blocked(driver)
@@ -1329,13 +1396,14 @@ def navigate_to_hd_product(driver, hd_url, name=''):
         if i < len(sources) - 1:
             time.sleep(random.uniform(2, 4))
 
-    # Fallback: HD on-site search
-    sku = extract_sku_from_url(hd_url)
-    if sku:
-        print(f"   > Trying HD on-site search...")
+    # Fallback: HD on-site search — search by NAME when available,
+    # falling back to the URL number only if we have no name.
+    query_text = name or extract_sku_from_url(hd_url)
+    if query_text:
+        print("   > Trying HD on-site search...")
         clear_hd_cookies(driver)
         time.sleep(random.uniform(3, 8))
-        if navigate_hd_via_site_search(driver, sku):
+        if navigate_hd_via_site_search(driver, query_text):
             return True
 
     # Last resort: direct URL
