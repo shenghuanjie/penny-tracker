@@ -1170,18 +1170,30 @@ def navigate_hd_via_google(driver, hd_url, name=''):
             hd_result = wait.until(EC.element_to_be_clickable(
                 (By.XPATH, "//a[contains(@href, 'homedepot.com/p/')]")))
             print(f"   > Found HD link in Google results, clicking...")
+            href = hd_result.get_attribute("href") or ""
             driver.execute_script(
                 "arguments[0].scrollIntoView({block: 'center'});", hd_result)
             time.sleep(random.uniform(0.5, 1.5))
-            hd_result.click()
+            try:
+                hd_result.click()
+            except Exception:
+                # Element may be intercepted/stale — try JS click, then
+                # fall back to navigating directly to the resolved href.
+                try:
+                    driver.execute_script("arguments[0].click();", hd_result)
+                except Exception:
+                    if "homedepot.com/p/" in href:
+                        driver.get(href)
+                    else:
+                        raise
             time.sleep(random.uniform(4, 7))
 
             if not is_hd_blocked(driver):
                 return True
             else:
                 print(f"   > Blocked after Google click-through")
-        except Exception:
-            print(f"   > No HD result found on Google")
+        except Exception as click_exc:
+            print(f"   > No usable HD result on Google ({click_exc})")
 
     except Exception as e:
         print(f"   > Google search failed: {e}")

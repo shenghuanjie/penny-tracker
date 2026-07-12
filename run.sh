@@ -31,6 +31,23 @@ fi
 
 GIT_SSH="ssh -i ~/.ssh/id_rsa_public_github -o IdentitiesOnly=yes"
 
+# Ensure the penny-tracker conda env is active (it has the deps:
+# undetected_chromedriver, selenium, ...). Activate it if not already.
+if [[ "${CONDA_DEFAULT_ENV:-}" != "penny-tracker" ]]; then
+    echo "Activating conda env: penny-tracker"
+    # Load conda's shell functions, then activate.
+    if command -v conda &>/dev/null; then
+        source "$(conda info --base)/etc/profile.d/conda.sh"
+        conda activate penny-tracker || {
+            echo "ERROR: could not activate conda env 'penny-tracker'" >&2
+            exit 1
+        }
+    else
+        echo "ERROR: conda not found in PATH" >&2
+        exit 1
+    fi
+fi
+
 push() {
     echo ""
     echo "=== Updating HTML report and pushing ==="
@@ -83,7 +100,42 @@ if command -v caffeinate &>/dev/null; then
     echo "☕ Keeping Mac awake via caffeinate..."
     caffeinate -si -w $$ &
     CAFF_PID=$!
-    trap "kill $CAFF_PID 2>/dev/null" EXIT
 fi
+
+# Also keep the Mac awake with the LID CLOSED (caffeinate alone does not do
+# this). `pmset -b disablesleep 1` disables sleep on battery even when the
+# lid is shut. This needs sudo. We restore the original setting on exit.
+DISABLESLEEP_SET=false
+# Optional password file for unattended sudo. SECURITY WARNING: storing your
+# password in cleartext is risky. Lock it down: chmod 600 ~/.sudo_pass
+SUDO_PASS_FILE="$HOME/.sudo_pass"
+if command -v pmset &>/dev/null; then
+    echo "🔒 Disabling lid-close sleep (needs sudo)..."
+    if sudo -n pmset -b disablesleep 1 2>/dev/null \
+        || { [[ -f "$SUDO_PASS_FILE" ]] \
+             && sudo -S pmset -b disablesleep 1 < "$SUDO_PASS_FILE" 2>/dev/null; } \
+        || sudo pmset -b disablesleep 1; then
+        DISABLESLEEP_SET=true
+        echo "   > Lid-close sleep disabled. Mac stays awake with lid shut."
+    else
+        echo "   > Could not disable lid-close sleep (continuing anyway)."
+    fi
+fi
+
+cleanup() {
+    # Restore lid-close sleep behavior
+    if [[ "$DISABLESLEEP_SET" == true ]]; then
+        echo ""
+        echo "🔓 Restoring lid-close sleep setting..."
+        { sudo -n pmset -b disablesleep 0 2>/dev/null \
+            || { [[ -f "$SUDO_PASS_FILE" ]] \
+                 && sudo -S pmset -b disablesleep 0 < "$SUDO_PASS_FILE" 2>/dev/null; } \
+            || sudo pmset -b disablesleep 0 2>/dev/null; } \
+            && echo "   > Lid-close sleep re-enabled."
+    fi
+    # Stop caffeinate
+    [[ -n "${CAFF_PID:-}" ]] && kill "$CAFF_PID" 2>/dev/null
+}
+trap cleanup EXIT INT TERM
 
 run_pipeline
