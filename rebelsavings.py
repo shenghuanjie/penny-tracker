@@ -23,7 +23,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 ROW_SIZE = 1000  # Target bytes per line
 FIELDNAMES = ["name", "price", "url", "image", "original_timestamp", "hd_status",
-              "updated_at", "padding"]
+              "updated_at", "sku", "padding"]
 NEWLINE = '\n'
 TSV_FILENAME = "rebel_final_report.tsv"
 BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
@@ -380,7 +380,9 @@ def generate_html_report(deals, output_path):
         url = d.get('url', '#')
         updated = d.get('updated_at', '')
         added = d.get('original_timestamp', '')
-        sku = extract_sku_from_url(url) if url and url != '#' else ''
+        # Prefer the Store SKU read from the HD product page;
+        # fall back to Internet # parsed from the URL.
+        sku = d.get('sku', '') or (extract_sku_from_url(url) if url and url != '#' else '')
 
         rows_html += f"""<tr data-idx="{idx}">
             <td><img src="{image_src}" loading="lazy"></td>
@@ -401,7 +403,8 @@ def generate_html_report(deals, output_path):
         url = d.get('url', '')
         if not url or 'homedepot.com' not in url:
             continue
-        sku = extract_sku_from_url(url)
+        # Use Store SKU if available, otherwise fall back to Internet # from URL
+        sku = d.get('sku', '') or extract_sku_from_url(url)
         if not sku:
             continue
         penny_skus[sku] = {
@@ -2895,15 +2898,14 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 driver.switch_to.window(tab_handle)
                 if nav_ok:
                     time.sleep(random.uniform(1, 2))
-                    # Extract the real SKU from the page text ("Internet # XXXXXXX")
-                    # and update the stored URL so the HTML report shows the correct SKU.
+                    # Read the real Store SKU from the page text
+                    # ("Store SKU # XXXXXXXXXX") and save it separately.
+                    # We never overwrite the URL — the URL uses Internet #,
+                    # which is the correct product identifier for HD links.
                     page_sku = extract_sku_from_hd_page(driver)
                     if page_sku:
-                        canonical = (f"https://www.homedepot.com/p/"
-                                     f"{page_sku}/{page_sku}")
-                        if deal_list[idx]['url'] != canonical:
-                            deal_list[idx]['url'] = canonical
-                            print(f"   SKU from page: {page_sku}")
+                        deal_list[idx]['sku'] = page_sku
+                        print(f"   Store SKU: {page_sku}")
                     hd_status = check_hd_item_tab_status(driver, name=name)
                 else:
                     hd_status = HDStatus.FAILURE
