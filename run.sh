@@ -96,6 +96,8 @@ run_pipeline() {
 # Keep Mac awake for the entire run (prevent sleep).
 # caffeinate -s prevents system sleep; -i prevents idle sleep.
 # The process exits when run_pipeline finishes.
+# First, clean up any stale caffeinate from previous interrupted runs.
+pkill -f "caffeinate -si -w" 2>/dev/null || true
 if command -v caffeinate &>/dev/null; then
     echo "☕ Keeping Mac awake via caffeinate..."
     caffeinate -si -w $$ &
@@ -103,18 +105,24 @@ if command -v caffeinate &>/dev/null; then
 fi
 
 # Also keep the Mac awake with the LID CLOSED (caffeinate alone does not do
-# this). `pmset -b disablesleep 1` disables sleep on battery even when the
-# lid is shut. This needs sudo. We restore the original setting on exit.
+# this). `pmset -a disablesleep 1` disables sleep on all power sources even
+# when the lid is shut. This needs sudo. We restore the setting on exit.
 DISABLESLEEP_SET=false
 # Optional password file for unattended sudo. SECURITY WARNING: storing your
 # password in cleartext is risky. Lock it down: chmod 600 ~/.sudo_pass
 SUDO_PASS_FILE="$HOME/.sudo_pass"
+
+# Helper: run pmset with sudo, trying cached sudo, then password file.
+_sudo_pmset() {
+    sudo -n pmset "$@" 2>/dev/null \
+        || { [[ -f "$SUDO_PASS_FILE" ]] \
+             && sudo -S pmset "$@" < "$SUDO_PASS_FILE" 2>/dev/null; } \
+        || sudo pmset "$@"
+}
+
 if command -v pmset &>/dev/null; then
     echo "🔒 Disabling lid-close sleep (needs sudo)..."
-    if sudo -n pmset -b disablesleep 1 2>/dev/null \
-        || { [[ -f "$SUDO_PASS_FILE" ]] \
-             && sudo -S pmset -b disablesleep 1 < "$SUDO_PASS_FILE" 2>/dev/null; } \
-        || sudo pmset -b disablesleep 1; then
+    if _sudo_pmset -a disablesleep 1; then
         DISABLESLEEP_SET=true
         echo "   > Lid-close sleep disabled. Mac stays awake with lid shut."
     else
@@ -127,14 +135,16 @@ cleanup() {
     if [[ "$DISABLESLEEP_SET" == true ]]; then
         echo ""
         echo "🔓 Restoring lid-close sleep setting..."
-        { sudo -n pmset -b disablesleep 0 2>/dev/null \
-            || { [[ -f "$SUDO_PASS_FILE" ]] \
-                 && sudo -S pmset -b disablesleep 0 < "$SUDO_PASS_FILE" 2>/dev/null; } \
-            || sudo pmset -b disablesleep 0 2>/dev/null; } \
-            && echo "   > Lid-close sleep re-enabled."
+        if _sudo_pmset -a disablesleep 0; then
+            echo "   > Lid-close sleep re-enabled."
+        else
+            echo "   > WARNING: could not restore disablesleep. "
+            echo "     Run manually: sudo pmset -a disablesleep 0"
+        fi
     fi
-    # Stop caffeinate
+    # Stop caffeinate (this instance and any strays we started)
     [[ -n "${CAFF_PID:-}" ]] && kill "$CAFF_PID" 2>/dev/null
+    pkill -f "caffeinate -si -w $$" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 

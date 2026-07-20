@@ -3074,12 +3074,14 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         remaining_time = max(total_seconds - elapsed_total, 0)
 
         if remaining_time <= 0:
-            print("   Time window exhausted. Stopping.")
-            break
-
-        target_interval = remaining_time / items_left_after
-        # Cap at 10 minutes — no point waiting longer between batches
-        target_interval = min(target_interval, 600)
+            # Time window elapsed, but we do NOT stop — the window is only
+            # used for pacing. Keep going until every item is checked,
+            # using a modest jittered pause between batches.
+            target_interval = random.uniform(20, 45)
+        else:
+            target_interval = remaining_time / items_left_after
+            # Cap at 10 minutes — no point waiting longer between batches
+            target_interval = min(target_interval, 600)
         # Add ±30% jitter
         jitter = target_interval * random.uniform(-0.3, 0.3)
         pause = max(target_interval + jitter, 15)
@@ -3340,21 +3342,30 @@ def main():
                 print(f"PHASE 2: HD checks"
                       f"{' (re-checking blocked/error)' if args.recheck else ''}")
                 print(f"{'='*60}")
-                check_hd_status_phase(hd_driver, deal_list, tsv_output_path,
-                                      chrome_profile=args.chrome_profile,
-                                      profile_dir=args.profile_dir,
-                                      remote_debug=args.remote_debug,
-                                      zip_code=args.zip,
-                                      hd_login=False,
-                                      recheck=args.recheck,
-                                      hours=args.hours)
+                try:
+                    check_hd_status_phase(hd_driver, deal_list, tsv_output_path,
+                                          chrome_profile=args.chrome_profile,
+                                          profile_dir=args.profile_dir,
+                                          remote_debug=args.remote_debug,
+                                          zip_code=args.zip,
+                                          hd_login=False,
+                                          recheck=args.recheck,
+                                          hours=args.hours)
+                except KeyboardInterrupt:
+                    # User pressed Ctrl-C: stop checking but still publish
+                    # whatever we have so far (report + commit + push below).
+                    print("\n!!! Interrupted by user (Ctrl-C). "
+                          "Publishing partial results...")
             elif run_phase2:
                 print("No HD driver available — skipping Phase 2")
             else:
                 print(f"\nSkipping Phase 2 (--phase {args.phase})")
         finally:
             if hd_driver:
-                hd_driver.quit()
+                try:
+                    hd_driver.quit()
+                except Exception:
+                    pass
                 print("HD driver closed.")
 
         # Git push after HD checks (or after phase 1 if phase 2 skipped)
