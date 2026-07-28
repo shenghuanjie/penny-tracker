@@ -24,7 +24,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 ROW_SIZE = 1000  # Target bytes per line
 FIELDNAMES = ["name", "price", "url", "image", "original_timestamp", "hd_status",
-              "updated_at", "sku", "padding"]
+              "updated_at", "sku", "department", "padding"]
 NEWLINE = '\n'
 TSV_FILENAME = "rebel_final_report.tsv"
 BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
@@ -352,7 +352,7 @@ def generate_html_report(deals, output_path):
         # Negate by using reverse string trick — just use negative approach
         return (pri, updated)
 
-    # Sort: priority asc, then updated_at desc within each group
+    # Sort: priority asc, then department asc, then updated_at desc within group
     from itertools import groupby
     final_order = []
     deals_sorted = sorted(deals, key=lambda d: status_priority.get(
@@ -360,8 +360,25 @@ def generate_html_report(deals, output_path):
     for _, group in groupby(deals_sorted, key=lambda d: status_priority.get(
             d.get('hd_status', '') or 'unchecked', 99)):
         group_list = list(group)
-        group_list.sort(key=lambda d: d.get('updated_at', '') or '', reverse=True)
-        final_order.extend(group_list)
+        # Secondary: group by department (items with a department first,
+        # empty department last, each department alphabetical).
+        # Tertiary: newest updated_at first within the same department.
+        group_list.sort(
+            key=lambda d: (
+                (d.get('department', '') or '') == '',   # empty depts last
+                (d.get('department', '') or '').lower(),  # dept alphabetical
+                # invert updated_at for desc by using reverse on a str key
+            )
+        )
+        # Stable-sort by updated_at desc within each department bucket.
+        reordered = []
+        for _dept, dept_group in groupby(
+                group_list,
+                key=lambda d: (d.get('department', '') or '').lower()):
+            dg = list(dept_group)
+            dg.sort(key=lambda d: d.get('updated_at', '') or '', reverse=True)
+            reordered.extend(dg)
+        final_order.extend(reordered)
     deals = final_order
 
     # Load FB deals
@@ -384,11 +401,13 @@ def generate_html_report(deals, output_path):
         # Prefer the Store SKU read from the HD product page;
         # fall back to Internet # parsed from the URL.
         sku = d.get('sku', '') or (extract_sku_from_url(url) if url and url != '#' else '')
+        department = d.get('department', '') or ''
 
         rows_html += f"""<tr data-idx="{idx}">
             <td><img src="{image_src}" loading="lazy"></td>
             <td>{name}</td>
             <td class="sku">{sku}</td>
+            <td class="dept">{department}</td>
             <td>{price}</td>
             <td class="{status}">{status.upper()}</td>
             <td>{updated}</td>
@@ -454,6 +473,7 @@ def generate_html_report(deals, output_path):
     .blocked {{ color: #c0392b; font-weight: bold; text-decoration: underline; }}
     .unchecked {{ color: #3498db; font-style: italic; }}
     .sku {{ font-weight: bold; color: #e67e22; }}
+    .dept {{ color: #555; font-size: 13px; }}
     .upc {{ font-weight: bold; color: #27ae60; }}
     .snippet {{ max-width: 300px; overflow: hidden; text-overflow: ellipsis;
                 white-space: nowrap; font-size: 13px; color: #555; }}
@@ -514,10 +534,11 @@ def generate_html_report(deals, output_path):
         <th>Image</th>
         <th onclick="sortTable(1)">Name <span class="arrow"></span></th>
         <th onclick="sortTable(2)">SKU <span class="arrow"></span></th>
-        <th onclick="sortTable(3)">Price <span class="arrow"></span></th>
-        <th onclick="sortTable(4)">Status <span class="arrow"></span></th>
-        <th onclick="sortTable(5)">Updated <span class="arrow"></span></th>
-        <th onclick="sortTable(6)">Added <span class="arrow"></span></th>
+        <th onclick="sortTable(3)">Dept <span class="arrow"></span></th>
+        <th onclick="sortTable(4)">Price <span class="arrow"></span></th>
+        <th onclick="sortTable(5)">Status <span class="arrow"></span></th>
+        <th onclick="sortTable(6)">Updated <span class="arrow"></span></th>
+        <th onclick="sortTable(7)">Added <span class="arrow"></span></th>
         <th>Link</th>
     </tr></thead>
     <tbody>
@@ -926,6 +947,36 @@ def extract_sku_from_hd_page(driver):
         pass
     # Last resort: parse from the current URL
     return extract_sku_from_url(driver.current_url)
+
+
+def extract_department_from_hd_page(driver):
+    """Extract the product department/category from the current HD page.
+
+    Home Depot shows a breadcrumb trail at the top of every product page,
+    e.g. "Home / Outdoors / Outdoor Power Equipment / String Trimmers".
+    The first meaningful crumb after "Home" is the top-level department,
+    which is what we use for grouping/sorting.
+
+    Returns the department string (e.g. "Outdoors") or "" if not found.
+    """
+    # Try the breadcrumb component first (most reliable).
+    selectors = [
+        "nav[aria-label='breadcrumb'] a",
+        ".breadcrumbs a",
+        "[data-component='Breadcrumbs'] a",
+        "ol.breadcrumb a",
+    ]
+    for sel in selectors:
+        try:
+            crumbs = driver.find_elements(By.CSS_SELECTOR, sel)
+            names = [c.text.strip() for c in crumbs if c.text.strip()]
+            # Drop a leading "Home" crumb; take the first real category.
+            names = [n for n in names if n.lower() != "home"]
+            if names:
+                return names[0]
+        except Exception:
+            continue
+    return ""
 
 
 _USER_AGENTS = [
@@ -2986,6 +3037,11 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                     if page_sku:
                         deal_list[idx]['sku'] = page_sku
                         print(f"   Store SKU: {page_sku}")
+                    # Read the department (breadcrumb) for grouping/sorting.
+                    page_dept = extract_department_from_hd_page(driver)
+                    if page_dept:
+                        deal_list[idx]['department'] = page_dept
+                        print(f"   Department: {page_dept}")
                     hd_status = check_hd_item_tab_status(driver, name=name)
                 else:
                     hd_status = HDStatus.FAILURE
