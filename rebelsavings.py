@@ -2495,6 +2495,49 @@ def toggle_oos_filter(driver, enable=True):
         return False
 
 
+# Known top-level Home Depot departments as shown on RebelSavings listings.
+# Used to pick the department line out of the title cell text.
+_HD_DEPARTMENTS = {
+    "appliances", "bath", "blinds & window treatments", "building materials",
+    "cleaning", "decor & furniture", "doors & windows", "electrical",
+    "flooring", "garage", "hardware", "heating & cooling", "home decor",
+    "kitchen", "kitchenware", "lawn & garden", "lighting", "outdoors",
+    "paint", "plumbing", "smart home", "storage & organization", "tools",
+    "wall & ceiling treatments", "workwear",
+}
+
+
+def _extract_rebel_department(row, title_lines):
+    """Pull the HD department from a RebelSavings summary row.
+
+    RebelSavings renders the department as a small subtitle inside the
+    title cell, right under the product name (e.g. "Tools", "Electrical",
+    "Outdoors", "Storage & Organization"). We read it here so the
+    department is captured during Phase 1 with zero Home Depot traffic.
+
+    Strategy:
+      1. Prefer a dedicated subtitle/category element if present.
+      2. Otherwise scan the title cell's text lines for a known department.
+    """
+    # 1. Try a dedicated category/subtitle element inside the title cell.
+    for sel in [".category", ".subtitle", ".product-category",
+                ".title-column small", ".title-column .sub"]:
+        try:
+            el = row.find_element(By.CSS_SELECTOR, sel)
+            txt = (el.text or "").strip()
+            if txt and txt.lower() in _HD_DEPARTMENTS:
+                return txt
+        except Exception:
+            continue
+
+    # 2. Scan the title cell text lines for a known department (last match
+    #    wins, since the department subtitle appears after the name).
+    for line in reversed(title_lines):
+        if line.lower() in _HD_DEPARTMENTS:
+            return line
+    return ""
+
+
 def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                         zip_code=DEFAULT_ZIP, max_items=float('inf'),
                         max_days=60):
@@ -2574,9 +2617,17 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                         break
 
                     name_elem = row.find_element(By.CLASS_NAME, "title-column")
-                    name = name_elem.text.splitlines()[0].strip()
+                    title_lines = [ln.strip() for ln in
+                                   name_elem.text.splitlines() if ln.strip()]
+                    name = title_lines[0] if title_lines else ""
                     if not name or name in seen_ids:
                         continue
+
+                    # RebelSavings shows the HD department as a subtitle line
+                    # under the product name in the title cell
+                    # (e.g. "Tools", "Electrical", "Outdoors"). Capture it
+                    # here so we never need a Home Depot page for department.
+                    department = _extract_rebel_department(row, title_lines)
 
                     price = row.find_element(By.XPATH, "./td[3]").text.strip()
                     try:
@@ -2775,6 +2826,7 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                         "name": name, "price": price, "url": hd_url,
                         "image": img_url, "original_timestamp": orig_ts,
                         "hd_status": hd_status, "updated_at": p1_updated_at,
+                        "department": department,
                         "padding": ""
                     }
                     print(pad_row(current_deal), file=f_out)
@@ -3183,7 +3235,8 @@ def main():
                              "Overrides --chrome-profile. Launch Chrome with --remote-debugging-port=9222 first.")
     parser.add_argument("-m", "--mode", choices=[
         RunningMode.CLEAN,
-        RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL, RunningMode.CHECK],
+        RunningMode.SEARCH, RunningMode.REPORT, RunningMode.ALL,
+        RunningMode.CHECK],
                         default=RunningMode.ALL,
                         help="Running mode.")
     parser.add_argument("--phase", choices=["1", "2", "both"], default="both",
