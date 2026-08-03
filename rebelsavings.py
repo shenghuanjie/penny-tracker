@@ -322,16 +322,16 @@ def generate_html_report(deals, output_path):
     # then blocked/failed, clearance, everything else
     status_priority = {
         'penny_new': 0,
-        'penny': 1,
-        'penny_old': 2,
-        'out_of_stock': 3,
-        'blocked': 4,
-        'failure': 5,
-        'error': 6,
-        'clearance': 7,
-        'penny_candidate': 8,
-        'not_penny': 9,
-        'unchecked': 10,
+        'penny': 0,
+        'penny_old': 0,
+        'out_of_stock': 0,
+        'blocked': 1,
+        'failure': 2,
+        'error': 3,
+        'clearance': 4,
+        'penny_candidate': 5,
+        'not_penny': 6,
+        'unchecked': 7,
     }
 
     def _sort_key(d):
