@@ -150,12 +150,11 @@ run_pipeline() {
     # ── Step 4: Phase 2 — check a bounded set of recent HD items ──
     echo ""
     echo ">>> Phase 2: Checking up to $MAX_HD_CHECKS recent HD items over $HD_HOURS hours"
-    RECHECK_ARGS=()
+    PHASE2_ARGS=(--phase 2 --hours "$HD_HOURS" --max-hd-checks "$MAX_HD_CHECKS")
     if [[ "$RETRY_BLOCKED" == true ]]; then
-        RECHECK_ARGS+=(--recheck)
+        PHASE2_ARGS+=(--recheck)
     fi
-    python rebelsavings.py --phase 2 --hours "$HD_HOURS" \
-        --max-hd-checks "$MAX_HD_CHECKS" "${RECHECK_ARGS[@]}" \
+    python rebelsavings.py "${PHASE2_ARGS[@]}" \
         || echo "Phase 2 failed (non-fatal)"
     push
 
