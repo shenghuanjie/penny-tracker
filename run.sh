@@ -4,15 +4,18 @@
 # Steps:
 #   1. Clean up TSV (remove old/duplicate entries)
 #   2. Phase 1: collect deals from RebelSavings
-#   3. Update HTML report + git push + wait for GitHub Pages
-#   4. Phase 2: check HD prices (spread over 8 hours)
-#   5. Update HTML report + git push
+#   3. Optionally collect Facebook group posts
+#   4. Update HTML report + git push + wait for GitHub Pages
+#   5. Phase 2: check a bounded set of recent HD candidates
+#   6. Update HTML report + git push
 #
 # Keeps Mac awake via caffeinate for the entire run.
 #
 # Usage:
-#   ./run.sh            # full pipeline (~8 hours)
+#   ./run.sh            # parallel collectors + 20 HD checks over ~1 hour
 #   ./run.sh --skip1    # skip phase 1, start from phase 2
+#   ./run.sh --sequential   # collect both sources one at a time
+#   ./run.sh --no-facebook  # collect RebelSavings only
 #
 # For best anti-bot results, launch Chrome with remote debugging before running:
 #   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
@@ -25,9 +28,35 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 SKIP_PHASE1=false
-if [[ "${1:-}" == "--skip1" ]]; then
-    SKIP_PHASE1=true
-fi
+SCRAPE_FACEBOOK=true
+PARALLEL_COLLECTORS=true
+RETRY_BLOCKED=false
+MAX_HD_CHECKS=20
+HD_HOURS=1
+
+usage() {
+    echo "Usage: ./run.sh [--skip1] [--sequential | --no-facebook] [--retry-blocked]"
+    echo "                [--max-hd-checks N] [--hours N]"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip1) SKIP_PHASE1=true; shift ;;
+        --facebook) SCRAPE_FACEBOOK=true; shift ;;
+        --parallel) PARALLEL_COLLECTORS=true; SCRAPE_FACEBOOK=true; shift ;;
+        --sequential) PARALLEL_COLLECTORS=false; shift ;;
+        --no-facebook) SCRAPE_FACEBOOK=false; PARALLEL_COLLECTORS=false; shift ;;
+        --retry-blocked) RETRY_BLOCKED=true; shift ;;
+        --max-hd-checks)
+            [[ $# -ge 2 ]] || { usage; exit 2; }
+            MAX_HD_CHECKS="$2"; shift 2 ;;
+        --hours)
+            [[ $# -ge 2 ]] || { usage; exit 2; }
+            HD_HOURS="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
+    esac
+done
 
 GIT_SSH="ssh -i ~/.ssh/id_rsa_public_github -o IdentitiesOnly=yes"
 
@@ -67,24 +96,67 @@ run_pipeline() {
     echo ">>> Cleaning up TSV (removing old/duplicate entries)"
     python rebelsavings.py -m clean || echo "Clean failed (non-fatal)"
 
-    # ── Step 2: Phase 1 — collect from RebelSavings ──
-    if [[ "$SKIP_PHASE1" == false ]]; then
+    # ── Steps 2-3: collect RebelSavings and optional Facebook data ──
+    if [[ "$PARALLEL_COLLECTORS" == true && "$SKIP_PHASE1" == false ]]; then
         echo ""
-        echo ">>> Phase 1: Collecting from RebelSavings"
-        python rebelsavings.py --phase 1 || echo "Phase 1 failed (non-fatal)"
+        echo ">>> Collecting RebelSavings and Facebook in parallel"
+        PENNY_TRACKER_ISOLATED_BROWSER=1 \
+            python rebelsavings.py --phase 1 --no-chrome-profile &
+        rebel_pid=$!
+        PENNY_TRACKER_ISOLATED_BROWSER=1 \
+            python fb_scraper.py --max-posts 30 --max-days 7 \
+                --no-chrome-profile --no-manual-login &
+        facebook_pid=$!
+
+        rebel_exit=0
+        facebook_exit=0
+        wait "$rebel_pid" || rebel_exit=$?
+        wait "$facebook_pid" || facebook_exit=$?
+        if [[ "$rebel_exit" -ne 0 ]]; then
+            echo "RebelSavings collection failed with exit $rebel_exit (non-fatal)"
+        fi
+        if [[ "$facebook_exit" -ne 0 ]]; then
+            echo "Facebook collection failed with exit $facebook_exit (non-fatal)"
+            echo ">>> Retrying Facebook with the existing Chrome profile"
+            python fb_scraper.py --max-posts 30 --max-days 7 \
+                --no-manual-login \
+                || echo "Facebook profile retry failed (non-fatal)"
+        fi
+    else
+        if [[ "$SKIP_PHASE1" == false ]]; then
+            echo ""
+            echo ">>> Phase 1: Collecting from RebelSavings"
+            python rebelsavings.py --phase 1 || echo "Phase 1 failed (non-fatal)"
+        else
+            echo ""
+            echo ">>> Skipping Phase 1"
+        fi
+
+        if [[ "$SCRAPE_FACEBOOK" == true ]]; then
+            echo ""
+            echo ">>> Collecting recent Facebook group posts"
+            python fb_scraper.py --max-posts 30 --max-days 7 \
+                || echo "Facebook collection failed (non-fatal)"
+        fi
+    fi
+
+    if [[ "$SKIP_PHASE1" == false || "$SCRAPE_FACEBOOK" == true ]]; then
         push
         echo ""
         echo ">>> Waiting 30s for GitHub Pages to refresh..."
         sleep 30
-    else
-        echo ""
-        echo ">>> Skipping Phase 1"
     fi
 
-    # ── Step 3: Phase 2 — check HD prices (spread over 8 hours) ──
+    # ── Step 4: Phase 2 — check a bounded set of recent HD items ──
     echo ""
-    echo ">>> Phase 2: Checking HD prices (spread over 8 hours)"
-    python rebelsavings.py --phase 2 --recheck --hours 8 || echo "Phase 2 failed (non-fatal)"
+    echo ">>> Phase 2: Checking up to $MAX_HD_CHECKS recent HD items over $HD_HOURS hours"
+    RECHECK_ARGS=()
+    if [[ "$RETRY_BLOCKED" == true ]]; then
+        RECHECK_ARGS+=(--recheck)
+    fi
+    python rebelsavings.py --phase 2 --hours "$HD_HOURS" \
+        --max-hd-checks "$MAX_HD_CHECKS" "${RECHECK_ARGS[@]}" \
+        || echo "Phase 2 failed (non-fatal)"
     push
 
     echo ""

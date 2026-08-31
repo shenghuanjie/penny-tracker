@@ -1,6 +1,7 @@
 import argparse
 import datetime
 import hashlib
+from html import escape
 import json
 import logging
 import os
@@ -30,7 +31,7 @@ except ImportError:
 FB_GROUP_URL = "https://www.facebook.com/groups/homedepotonecent"
 FB_TSV_FILENAME = "fb_deals.tsv"
 FB_FIELDNAMES = ["post_id", "post_date", "text_snippet", "skus", "upcs",
-                 "hd_links", "images", "scraped_at", "padding"]
+                 "hd_links", "images", "scraped_at", "post_url", "padding"]
 ROW_SIZE = 2000
 TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 
@@ -185,7 +186,9 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
     """
     # --- Remote debugging: explicit flag or auto-detect ---
     debug_addr = remote_debug
-    if not debug_addr and _is_port_open("localhost", 9222):
+    isolated_browser = os.environ.get("PENNY_TRACKER_ISOLATED_BROWSER") == "1"
+    if (not debug_addr and not isolated_browser
+            and _is_port_open("localhost", 9222)):
         debug_addr = DEFAULT_REMOTE_DEBUG
         logging.info("Auto-detected Chrome on port 9222 — attaching via remote debug")
 
@@ -204,16 +207,7 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
         return driver
 
     # --- Default: undetected_chromedriver (with profile if provided) ---
-    options = uc.ChromeOptions()
-    options.add_argument("--disable-popup-blocking")
-    options.page_load_strategy = 'eager'
-    options.add_argument("--window-size=1920,1080")
-    prefs = {
-        "profile.default_content_setting_values.popups": 1,
-        "profile.default_content_setting_values.notifications": 2,
-    }
-    options.add_experimental_option("prefs", prefs)
-
+    debug_data_dir = None
     if chrome_profile:
         logging.info("Launching undetected Chrome with profile: %s/%s",
                      chrome_profile, profile_dir or "Default")
@@ -226,17 +220,31 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
                 pass
         time.sleep(3)
         debug_data_dir = _setup_debug_profile(chrome_profile, profile_dir)
-        options.add_argument(f"--user-data-dir={debug_data_dir}")
-        if profile_dir:
-            options.add_argument(f"--profile-directory={profile_dir}")
     else:
         logging.info("Launching undetected Chrome (no profile)")
+
+    def _build_uc_options():
+        """Create fresh options because UC mutates them during startup."""
+        options = uc.ChromeOptions()
+        options.add_argument("--disable-popup-blocking")
+        options.page_load_strategy = 'eager'
+        options.add_argument("--window-size=1920,1080")
+        options.add_experimental_option("prefs", {
+            "profile.default_content_setting_values.popups": 1,
+            "profile.default_content_setting_values.notifications": 2,
+        })
+        if debug_data_dir:
+            options.add_argument(f"--user-data-dir={debug_data_dir}")
+            if profile_dir:
+                options.add_argument(f"--profile-directory={profile_dir}")
+        return options
 
     last_err = None
     for attempt in range(1, 4):
         try:
             logging.info("UC launch attempt %d/3...", attempt)
-            driver = uc.Chrome(options=options, version_main=138)
+            driver = uc.Chrome(options=_build_uc_options(), version_main=138,
+                               user_multi_procs=isolated_browser)
             driver.set_page_load_timeout(60)
             logging.info("UC connected successfully")
             return driver
@@ -244,7 +252,8 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
             last_err = e
             logging.warning("UC attempt %d failed: %s", attempt, e)
             if attempt < 3:
-                _kill_chrome()
+                if not isolated_browser:
+                    _kill_chrome()
                 if chrome_profile:
                     for lf in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
                         try:
@@ -326,13 +335,13 @@ def manual_login(driver):
 def is_logged_in(driver):
     """Check if we're logged into Facebook."""
     try:
-        # Logged-in FB has a navigation bar with profile link
-        driver.find_element(By.XPATH, "//div[@role='navigation']")
-        return True
+        # Facebook sets c_user only for an authenticated account. Page URL and
+        # navigation markup are unreliable because logged-out group pages also
+        # render them.
+        cookie = driver.get_cookie("c_user")
+        return bool(cookie and cookie.get("value"))
     except Exception:
-        pass
-    # Check URL — login page means not logged in
-    return "login" not in driver.current_url.lower()
+        return False
 
 
 def export_cookies(driver, cookie_file):
@@ -456,6 +465,21 @@ def get_post_id(post_elem):
         return str(int(time.time() * 1000))
 
 
+def get_post_url(post_elem):
+    """Extract a direct link to the original Facebook post."""
+    try:
+        links = post_elem.find_elements(
+            By.XPATH, ".//a[contains(@href, '/posts/') or "
+                      "contains(@href, '/permalink/')]")
+        for link in links:
+            href = link.get_attribute("href") or ""
+            if href:
+                return href.split("?", 1)[0]
+    except Exception:
+        pass
+    return ""
+
+
 def get_post_date(post_elem):
     """Extract the post date/time from a post element."""
     try:
@@ -555,7 +579,8 @@ def get_post_links(post_elem):
     return sorted(links)
 
 
-def scrape_posts(driver, max_posts=50, max_days=7):
+def scrape_posts(driver, max_posts=50, max_days=7,
+                 image_cache_dir=IMG_CACHE_DIR):
     """
     Scroll through the FB group and extract post data.
     Stops after max_posts or when posts are older than max_days.
@@ -581,13 +606,16 @@ def scrape_posts(driver, max_posts=50, max_days=7):
                 if post_id in seen_ids:
                     continue
 
-                # Get post text and all links
+                # Image-only posts are common in this group, so an empty or
+                # short caption is not grounds for discarding a post.
                 post_text = get_post_text(article)
-                if not post_text or len(post_text) < 5:
+                images = get_post_images(article)
+                if len(post_text.strip()) < 5 and not images:
                     continue
 
                 post_date = get_post_date(article)
                 post_links = get_post_links(article)
+                post_url = get_post_url(article)
 
                 # Check if post is too old
                 if post_date:
@@ -598,10 +626,9 @@ def scrape_posts(driver, max_posts=50, max_days=7):
 
                 # Combine text and links for extraction
                 full_text = post_text + "\n" + "\n".join(post_links)
-                images = get_post_images(article)
 
                 # OCR images for SKUs/UPCs in receipts and shelf tags
-                ocr_text = ocr_post_images(images)
+                ocr_text = ocr_post_images(images, cache_dir=image_cache_dir)
                 if ocr_text:
                     full_text += "\n" + ocr_text
                     logging.info("  OCR extracted %d chars from %d images",
@@ -611,17 +638,35 @@ def scrape_posts(driver, max_posts=50, max_days=7):
                 upcs = extract_upcs(full_text)
                 hd_links = extract_hd_links(full_text) or list(post_links)
 
-                # Only save posts that have relevant deal info
-                if skus or upcs or hd_links:
+                relevant_text = re.search(
+                    r'\b(?:penny|clearance|sku|upc|home\s*depot)\b|\$0?\.01\b',
+                    full_text, re.IGNORECASE)
+
+                # Cache images because Facebook CDN links expire. Keep the
+                # remote URL as a fallback when a download is unavailable.
+                report_images = []
+                cache_base = os.path.dirname(image_cache_dir) or "."
+                for image_url in images[:3]:
+                    image_path = _download_image(image_url, image_cache_dir)
+                    if image_path:
+                        report_images.append(os.path.relpath(image_path,
+                                                             cache_base))
+                    else:
+                        report_images.append(image_url)
+
+                # The group itself is deal-specific. Preserve image posts for
+                # manual review even when OCR cannot identify a SKU or UPC.
+                if skus or upcs or hd_links or images or relevant_text:
                     post_entry = {
                         "post_id": post_id,
                         "post_date": post_date,
-                        "text_snippet": post_text[:200].replace("\t", " ").replace("\n", " "),
+                        "text_snippet": post_text[:300].replace("\t", " ").replace("\n", " "),
                         "skus": ",".join(skus),
                         "upcs": ",".join(upcs),
                         "hd_links": ",".join(hd_links),
-                        "images": ",".join(images[:3]),  # Max 3 images
+                        "images": ",".join(report_images),
                         "scraped_at": datetime.datetime.now().strftime(TIMESTAMP_FORMAT),
+                        "post_url": post_url,
                         "padding": ""
                     }
                     posts_data.append(post_entry)
@@ -735,7 +780,7 @@ def generate_fb_html(deals, output_path):
        | Updated: """ + datetime.datetime.now().strftime("%Y-%m-%d %H:%M") + """</p>
     <table>
     <tr><th>Image</th><th>SKU</th><th>UPC</th><th>HD Link</th>
-        <th>Post Snippet</th><th>Date</th></tr>
+        <th>Post</th><th>Post Snippet</th><th>Date</th></tr>
     """
 
     for deal in deals:
@@ -773,14 +818,18 @@ def generate_fb_html(deals, output_path):
                 if link and "homedepot.com" in link:
                     link_html += f'<a href="{link}" target="_blank">View</a><br>'
 
-        snippet = deal.get("text_snippet", "")
-        date = deal.get("post_date", "")
+        post_url = deal.get("post_url", "")
+        post_html = (f'<a href="{escape(post_url, quote=True)}" '
+                     f'target="_blank">Original</a>' if post_url else '—')
+        snippet = escape(deal.get("text_snippet", ""))
+        date = escape(deal.get("post_date", ""))
 
         html += f"""<tr>
             <td>{img_html}</td>
             <td>{sku_html or '—'}</td>
             <td>{upc_html or '—'}</td>
             <td>{link_html or '—'}</td>
+            <td>{post_html}</td>
             <td class="snippet" title="{snippet}">{snippet[:100]}</td>
             <td class="date">{date}</td>
         </tr>\n"""
@@ -816,6 +865,8 @@ def main():
     parser.add_argument("--remote-debug", type=str, default=None,
                         help="Connect to running Chrome via remote debugging (e.g. 'localhost:9222'). "
                              "Overrides --chrome-profile. Launch Chrome with --remote-debugging-port=9222 first.")
+    parser.add_argument("--no-manual-login", action="store_true",
+                        help="Fail instead of waiting for interactive Facebook login.")
     parser.add_argument("-m", "--mode", choices=["scrape", "report"],
                         default="scrape",
                         help="scrape: scrape FB group; report: generate HTML only")
@@ -861,7 +912,7 @@ def main():
 
     if args.mode == "report":
         generate_fb_html(existing_deals, report_path)
-        return
+        return 0
 
     # --- Scrape mode ---
     driver = get_driver(chrome_profile=args.chrome_profile,
@@ -880,7 +931,16 @@ def main():
             else:
                 print("Cookie login failed.")
 
-        if not logged_in:
+        # A copied Chrome profile may already have a valid Facebook session
+        # even when no exported cookie file exists.
+        if not logged_in and args.chrome_profile:
+            driver.get(FB_GROUP_URL)
+            time.sleep(5)
+            logged_in = is_logged_in(driver)
+            if logged_in:
+                print("Logged in via Chrome profile.")
+
+        if not logged_in and not args.no_manual_login:
             manual_login(driver)
             driver.get(FB_GROUP_URL)
             time.sleep(5)
@@ -891,7 +951,7 @@ def main():
 
         if not logged_in:
             print("ERROR: Could not log in to Facebook.")
-            return
+            return 1
 
         # Navigate to group
         print(f"Navigating to group: {FB_GROUP_URL}")
@@ -908,11 +968,12 @@ def main():
             print("Group page loaded.")
         except Exception:
             print("Could not find posts on group page.")
-            return
+            return 1
 
         # Scrape
-        new_posts = scrape_posts(driver, max_posts=args.max_posts,
-                                 max_days=args.max_days)
+        new_posts = scrape_posts(
+            driver, max_posts=args.max_posts, max_days=args.max_days,
+            image_cache_dir=os.path.join(args.output_dir, IMG_CACHE_DIR))
 
         # Merge with existing
         merged = list(existing_deals)
@@ -936,10 +997,15 @@ def main():
 
     finally:
         # Don't quit if attached to user's Chrome via remote debug
-        if not (args.remote_debug or _is_port_open("localhost", 9222)):
+        isolated_browser = os.environ.get("PENNY_TRACKER_ISOLATED_BROWSER") == "1"
+        auto_attached = (not isolated_browser
+                         and _is_port_open("localhost", 9222))
+        if not (args.remote_debug or auto_attached):
             driver.quit()
         print("Done.")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

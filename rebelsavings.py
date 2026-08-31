@@ -1,4 +1,5 @@
 import datetime
+from html import escape
 import logging
 import re
 import requests
@@ -30,6 +31,7 @@ TSV_FILENAME = "rebel_final_report.tsv"
 BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
 DEFAULT_ZIP = "94538"
 REBEL_SAVINGS_DEAL_URL = "https://www.rebelsavings.com/home-depot?zip={zip}"
+TRIP_LIST_LIMIT = 60
 
 DEFAULT_CHROME_PROFILE = "/Users/shengh4/Library/Application Support/Google/Chrome"
 DEFAULT_PROFILE_DIR = "Profile 1"
@@ -298,7 +300,7 @@ def _load_fb_deals(output_dir):
     if not os.path.isfile(fb_tsv):
         return []
     fb_fields = ["post_id", "post_date", "text_snippet", "skus", "upcs",
-                 "hd_links", "images", "scraped_at", "padding"]
+                 "hd_links", "images", "scraped_at", "post_url", "padding"]
     deals = []
     with open(fb_tsv, "r", encoding="utf-8") as f:
         f.readline()  # skip header
@@ -415,6 +417,55 @@ def generate_html_report(deals, output_path):
             <td><a href="{url}" target="_blank">Link</a></td>
         </tr>"""
 
+    # Keep the store view intentionally small: only confirmed penny statuses,
+    # with newly verified items ahead of older ones.
+    trip_deals = [d for d in deals if d.get('hd_status') in (
+        HDStatus.PENNY_NEW, HDStatus.PENNY)]
+    trip_deals.sort(key=lambda d: d.get('updated_at', '') or '', reverse=True)
+    trip_deals.sort(key=lambda d: 0 if d.get('hd_status') ==
+                    HDStatus.PENNY_NEW else 1)
+    trip_deals = trip_deals[:TRIP_LIST_LIMIT]
+    trip_departments = sorted({d.get('department', '').strip()
+                               for d in trip_deals
+                               if d.get('department', '').strip()})
+    department_options = ''.join(
+        f'<option value="{escape(dept.lower(), quote=True)}">'
+        f'{escape(dept)}</option>' for dept in trip_departments)
+
+    trip_cards = ""
+    for idx, deal in enumerate(trip_deals):
+        trip_status = deal.get('hd_status', '')
+        trip_url = deal.get('url', '#') or '#'
+        trip_sku = (deal.get('sku', '') or
+                    extract_sku_from_url(trip_url) or '')
+        trip_name = deal.get('name', 'Unknown') or 'Unknown'
+        trip_dept = deal.get('department', '') or 'Other'
+        trip_price = deal.get('price', 'N/A') or 'N/A'
+        trip_image = deal.get('image', '') or ''
+        trip_key = trip_sku or f'trip-{idx}'
+        search_text = f'{trip_name} {trip_sku} {trip_dept}'.lower()
+        image_html = (f'<img src="{escape(trip_image, quote=True)}" '
+                      f'alt="" loading="lazy">' if trip_image else '')
+        trip_cards += f"""<article class="trip-card"
+                data-key="{escape(trip_key, quote=True)}"
+                data-status="{escape(trip_status, quote=True)}"
+                data-dept="{escape(trip_dept.lower(), quote=True)}"
+                data-search="{escape(search_text, quote=True)}">
+            <label class="trip-check">
+                <input type="checkbox" aria-label="Checked">
+            </label>
+            <div class="trip-image">{image_html}</div>
+            <div class="trip-details">
+                <div class="trip-badges"><span>{escape(trip_dept)}</span>
+                    <span class="{escape(trip_status)}">{escape(trip_status.upper())}</span></div>
+                <h3>{escape(trip_name)}</h3>
+                <div class="trip-facts"><b>{escape(trip_price)}</b>
+                    <span>SKU {escape(trip_sku) if trip_sku else 'unknown'}</span></div>
+                <a class="trip-link" href="{escape(trip_url, quote=True)}"
+                   target="_blank">Open product</a>
+            </div>
+        </article>"""
+
     # --- Build penny SKU lookup for the scanner tab ---
     import json as _json
     penny_skus = {}
@@ -448,6 +499,7 @@ def generate_html_report(deals, output_path):
     .tab.active {{ background: white; color: #333; border-bottom: 2px solid white;
                    margin-bottom: -1px; position: relative; z-index: 1; }}
     .tab.hd.active {{ color: #f96302; }}
+    .tab.trip.active {{ color: #176b45; }}
     .tab.fb.active {{ color: #1877f2; }}
     .tab-content {{ display: none; border: 1px solid #ddd; border-radius: 0 8px 8px 8px;
                     background: white; padding: 0; }}
@@ -459,6 +511,16 @@ def generate_html_report(deals, output_path):
     .hd-table th:hover {{ background: #e05800; }}
     .hd-table th .arrow {{ font-size: 10px; margin-left: 4px; }}
     .fb-table th {{ background: #1877f2; }}
+    .fb-shell {{ padding: 16px; }}
+    .fb-toolbar {{ display: grid; grid-template-columns: minmax(220px, 1fr) 180px auto;
+                   gap: 8px; align-items: center; margin-bottom: 10px; }}
+    .fb-toolbar input, .fb-toolbar select {{ min-height: 40px; padding: 8px 10px;
+                   border: 1px solid #bbb; border-radius: 4px; background: white; font-size: 14px; }}
+    .fb-source {{ padding: 8px 10px; border: 1px solid #1877f2; border-radius: 4px;
+                  text-align: center; font-weight: bold; }}
+    .fb-count {{ color: #666; font-size: 13px; margin: 0 0 10px; }}
+    .fb-table-wrap {{ overflow-x: auto; }}
+    .fb-empty {{ margin: 0; padding: 28px 12px; text-align: center; color: #666; }}
     tr:nth-child(even) {{ background-color: #f9f9f9; }}
     img {{ width: 70px; height: auto; border-radius: 4px; object-fit: cover; }}
     .penny_new {{ color: #27ae60; font-weight: bold; }}
@@ -476,7 +538,7 @@ def generate_html_report(deals, output_path):
     .dept {{ color: #555; font-size: 13px; }}
     .upc {{ font-weight: bold; color: #27ae60; }}
     .snippet {{ max-width: 300px; overflow: hidden; text-overflow: ellipsis;
-                white-space: nowrap; font-size: 13px; color: #555; }}
+                white-space: normal; font-size: 13px; line-height: 1.35; color: #555; }}
     .date {{ white-space: nowrap; color: #888; }}
     .fb-img {{ max-width: 120px; max-height: 90px; }}
     a {{ color: #1877f2; text-decoration: none; }}
@@ -515,6 +577,44 @@ def generate_html_report(deals, output_path):
                   font-size: 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap;
                   margin: 10px 0; display: none; }}
     .toggle-link {{ color: #1877f2; cursor: pointer; font-size: 13px; }}
+    /* In-store shortlist */
+    .trip-shell {{ padding: 16px; }}
+    .trip-toolbar {{ display: grid; grid-template-columns: minmax(180px, 1fr) 180px 160px auto;
+                     gap: 8px; align-items: center; margin-bottom: 12px; }}
+    .trip-toolbar input[type="search"], .trip-toolbar select {{ min-height: 40px; padding: 8px 10px;
+                     border: 1px solid #bbb; border-radius: 4px; background: white; font-size: 14px; }}
+    .trip-toolbar label {{ white-space: nowrap; font-size: 14px; }}
+    .trip-count {{ color: #666; font-size: 13px; margin: 0 0 12px; }}
+    .trip-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }}
+    .trip-card {{ display: grid; grid-template-columns: 28px 96px minmax(0, 1fr); gap: 10px;
+                  min-height: 118px; padding: 10px; border: 1px solid #ddd; border-radius: 6px;
+                  background: white; }}
+    .trip-card.done {{ opacity: 0.5; }}
+    .trip-check {{ display: flex; align-items: flex-start; justify-content: center; padding-top: 3px; }}
+    .trip-check input {{ width: 20px; height: 20px; accent-color: #176b45; }}
+    .trip-image {{ width: 96px; height: 96px; background: #f2f2f2; overflow: hidden; border-radius: 4px; }}
+    .trip-image img {{ width: 100%; height: 100%; object-fit: contain; border-radius: 0; }}
+    .trip-details {{ min-width: 0; }}
+    .trip-details h3 {{ font-size: 15px; line-height: 1.3; margin: 6px 0; color: #222; }}
+    .trip-badges {{ display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px; font-weight: bold; }}
+    .trip-badges span {{ padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; }}
+    .trip-facts {{ display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; margin-bottom: 7px; }}
+    .trip-link {{ display: inline-block; padding: 5px 8px; border: 1px solid #176b45;
+                  border-radius: 4px; color: #176b45; font-weight: bold; font-size: 13px; }}
+    @media (max-width: 700px) {{
+        body {{ padding: 8px; }}
+        .tabs {{ overflow-x: auto; }}
+        .tab {{ padding: 10px 13px; white-space: nowrap; font-size: 13px; }}
+        .trip-shell {{ padding: 10px; }}
+        .trip-toolbar {{ grid-template-columns: 1fr 1fr; }}
+        .trip-toolbar input[type="search"] {{ grid-column: 1 / -1; }}
+        .trip-grid {{ grid-template-columns: 1fr; }}
+        .trip-card {{ grid-template-columns: 26px 82px minmax(0, 1fr); }}
+        .trip-image {{ width: 82px; height: 82px; }}
+        .fb-shell {{ padding: 10px; }}
+        .fb-toolbar {{ grid-template-columns: 1fr 1fr; }}
+        .fb-toolbar input {{ grid-column: 1 / -1; }}
+    }}
 </style>
 </head><body>
     <h2>Penny Deal Tracker</h2>
@@ -523,12 +623,33 @@ def generate_html_report(deals, output_path):
     </p>
 
     <div class="tabs">
-        <div class="tab hd active" onclick="switchTab('hd')">RebelSavings ({len(deals)})</div>
-        {('<div class="tab fb" onclick="switchTab(&#39;fb&#39;)">Facebook Group (' + str(len(fb_deals)) + ')</div>') if has_fb else ''}
+        <div class="tab trip active" onclick="switchTab('trip')">Store Trip ({len(trip_deals)})</div>
+        <div class="tab hd" onclick="switchTab('hd')">All Deals ({len(deals)})</div>
+        <div class="tab fb" onclick="switchTab('fb')">Facebook Group ({len(fb_deals)})</div>
         <div class="tab scanner" onclick="switchTab('scanner')">📷 SKU Scanner</div>
     </div>
 
-    <div id="tab-hd" class="tab-content active">
+    <div id="tab-trip" class="tab-content active">
+        <div class="trip-shell">
+            <div class="trip-toolbar">
+                <input type="search" id="tripSearch" placeholder="Search name or SKU"
+                       aria-label="Search store trip">
+                <select id="tripDepartment" aria-label="Filter by department">
+                    <option value="">All departments</option>{department_options}
+                </select>
+                <select id="tripStatus" aria-label="Filter by status">
+                    <option value="">All confirmed</option>
+                    <option value="penny_new">Penny new</option>
+                    <option value="penny">Penny</option>
+                </select>
+                <label><input type="checkbox" id="tripHideDone" checked> Hide checked</label>
+            </div>
+            <p class="trip-count"><span id="tripVisibleCount">{len(trip_deals)}</span> items shown</p>
+            <div class="trip-grid" id="tripGrid">{trip_cards}</div>
+        </div>
+    </div>
+
+    <div id="tab-hd" class="tab-content">
     <table class="hd-table" id="hd-table">
     <thead><tr>
         <th>Image</th>
@@ -581,24 +702,63 @@ def generate_html_report(deals, output_path):
                     if link and "homedepot.com" in link:
                         link_html += f'<a href="{link}" target="_blank">View</a><br>'
 
-            snippet = deal.get("text_snippet", "")
-            date_val = deal.get("post_date", "")
+            raw_snippet = deal.get("text_snippet", "")
+            snippet = escape(raw_snippet)
+            date_val = escape(deal.get("post_date", ""))
+            post_url = deal.get("post_url", "")
+            post_html = (f'<a href="{escape(post_url, quote=True)}" '
+                         f'target="_blank">Original</a>' if post_url else '—')
+            search_text = f'{skus} {upcs} {raw_snippet}'.lower()
+            has_image = bool(images and images[0])
+            needs_review = not (skus or upcs or hd_links)
 
-            fb_rows += f"""<tr>
+            fb_rows += f"""<tr class="fb-row"
+                data-search="{escape(search_text, quote=True)}"
+                data-has-sku="{str(bool(skus)).lower()}"
+                data-has-upc="{str(bool(upcs)).lower()}"
+                data-has-image="{str(has_image).lower()}"
+                data-needs-review="{str(needs_review).lower()}">
                 <td>{img_html}</td>
                 <td>{sku_html or '—'}</td>
                 <td>{upc_html or '—'}</td>
                 <td>{link_html or '—'}</td>
+                <td>{post_html}</td>
                 <td class="snippet" title="{snippet}">{snippet[:100]}</td>
                 <td class="date">{date_val}</td>
             </tr>"""
 
         html += f"""
     <div id="tab-fb" class="tab-content">
-    <table class="fb-table"><tr><th>Image</th><th>SKU</th><th>UPC</th><th>HD Link</th>
-        <th>Post Snippet</th><th>Date</th></tr>
-    {fb_rows}
-    </table></div>"""
+    <div class="fb-shell">
+        <div class="fb-toolbar">
+            <input type="search" id="fbSearch" placeholder="Search post, SKU, or UPC"
+                   aria-label="Search Facebook posts">
+            <select id="fbType" aria-label="Filter Facebook posts">
+                <option value="">All posts</option>
+                <option value="sku">With SKU</option>
+                <option value="upc">With UPC</option>
+                <option value="image">With image</option>
+                <option value="review">Needs review</option>
+            </select>
+            <a class="fb-source" href="https://www.facebook.com/groups/homedepotonecent"
+               target="_blank">Open group</a>
+        </div>
+        <p class="fb-count"><span id="fbVisibleCount">{len(fb_deals)}</span> posts shown</p>
+        <div class="fb-table-wrap"><table class="fb-table">
+        <tr><th>Image</th><th>SKU</th><th>UPC</th><th>HD Link</th>
+            <th>Post</th><th>Post Snippet</th><th>Date</th></tr>
+        {fb_rows}
+        </table></div>
+    </div></div>"""
+    else:
+        html += """
+    <div id="tab-fb" class="tab-content">
+        <div class="fb-shell">
+            <a class="fb-source" href="https://www.facebook.com/groups/homedepotonecent"
+               target="_blank">Open Facebook group</a>
+            <p class="fb-empty">No Facebook posts collected yet.</p>
+        </div>
+    </div>"""
 
     # --- Scanner Tab ---
     html += f"""
@@ -649,6 +809,76 @@ function switchTab(tab) {
     document.getElementById('tab-' + tab).classList.add('active');
     document.querySelector('.tab.' + tab).classList.add('active');
 }
+
+function filterFacebook() {
+    const search = document.getElementById('fbSearch');
+    if (!search) return;
+    const query = search.value.trim().toLowerCase();
+    const type = document.getElementById('fbType').value;
+    let visible = 0;
+    document.querySelectorAll('.fb-row').forEach(row => {
+        const typeMatches = !type ||
+            (type === 'sku' && row.dataset.hasSku === 'true') ||
+            (type === 'upc' && row.dataset.hasUpc === 'true') ||
+            (type === 'image' && row.dataset.hasImage === 'true') ||
+            (type === 'review' && row.dataset.needsReview === 'true');
+        const matches = (!query || row.dataset.search.includes(query)) && typeMatches;
+        row.style.display = matches ? 'table-row' : 'none';
+        if (matches) visible++;
+    });
+    document.getElementById('fbVisibleCount').textContent = visible;
+}
+
+(function setupFacebookFilters() {
+    const search = document.getElementById('fbSearch');
+    if (!search) return;
+    search.addEventListener('input', filterFacebook);
+    document.getElementById('fbType').addEventListener('change', filterFacebook);
+    filterFacebook();
+})();
+
+const TRIP_STORAGE_KEY = 'penny-tracker-trip-checked';
+
+function readTripChecked() {
+    try { return new Set(JSON.parse(localStorage.getItem(TRIP_STORAGE_KEY) || '[]')); }
+    catch (_) { return new Set(); }
+}
+
+function filterTrip() {
+    const query = document.getElementById('tripSearch').value.trim().toLowerCase();
+    const department = document.getElementById('tripDepartment').value;
+    const status = document.getElementById('tripStatus').value;
+    const hideDone = document.getElementById('tripHideDone').checked;
+    let visible = 0;
+    document.querySelectorAll('.trip-card').forEach(card => {
+        const matches = (!query || card.dataset.search.includes(query)) &&
+            (!department || card.dataset.dept === department) &&
+            (!status || card.dataset.status === status) &&
+            (!hideDone || !card.classList.contains('done'));
+        card.style.display = matches ? 'grid' : 'none';
+        if (matches) visible++;
+    });
+    document.getElementById('tripVisibleCount').textContent = visible;
+}
+
+(function setupTripList() {
+    const checked = readTripChecked();
+    document.querySelectorAll('.trip-card').forEach(card => {
+        const checkbox = card.querySelector('input[type="checkbox"]');
+        checkbox.checked = checked.has(card.dataset.key);
+        card.classList.toggle('done', checkbox.checked);
+        checkbox.addEventListener('change', () => {
+            const current = readTripChecked();
+            checkbox.checked ? current.add(card.dataset.key) : current.delete(card.dataset.key);
+            localStorage.setItem(TRIP_STORAGE_KEY, JSON.stringify([...current]));
+            card.classList.toggle('done', checkbox.checked);
+            filterTrip();
+        });
+    });
+    ['tripSearch', 'tripDepartment', 'tripStatus', 'tripHideDone'].forEach(id =>
+        document.getElementById(id).addEventListener('input', filterTrip));
+    filterTrip();
+})();
 
 // Column sorting state
 let currentSortCol = -1;
@@ -1957,7 +2187,9 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
     """
     # --- Remote debugging: explicit flag or auto-detect ---
     debug_addr = remote_debug
-    if not debug_addr and _is_port_open("localhost", 9222):
+    isolated_browser = os.environ.get("PENNY_TRACKER_ISOLATED_BROWSER") == "1"
+    if (not debug_addr and not isolated_browser
+            and _is_port_open("localhost", 9222)):
         debug_addr = DEFAULT_REMOTE_DEBUG
         logging.info("Auto-detected Chrome on port 9222 — attaching via remote debug")
 
@@ -1976,18 +2208,7 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
         return driver
 
     # --- Default: undetected_chromedriver (with profile if provided) ---
-    # UC patches out automation flags to bypass Cloudflare and Akamai.
-    # Using your real profile gives you existing cookies and sessions.
-    options = uc.ChromeOptions()
-    options.add_argument("--disable-popup-blocking")
-    options.page_load_strategy = 'eager'
-    options.add_argument("--window-size=1920,1080")
-    prefs = {
-        "profile.default_content_setting_values.popups": 1,
-        "profile.default_content_setting_values.notifications": 2,
-    }
-    options.add_experimental_option("prefs", prefs)
-
+    debug_data_dir = None
     if chrome_profile:
         logging.info("Launching undetected Chrome with profile: %s/%s",
                      chrome_profile, profile_dir or "Default")
@@ -2002,18 +2223,32 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
         time.sleep(3)  # settle time for profile release
         # Use the Chrome-Debug dir with symlink to avoid "default dir" issues
         debug_data_dir = _setup_debug_profile(chrome_profile, profile_dir)
-        options.add_argument(f"--user-data-dir={debug_data_dir}")
-        if profile_dir:
-            options.add_argument(f"--profile-directory={profile_dir}")
     else:
         logging.info("Launching undetected Chrome (no profile)")
+
+    def _build_uc_options():
+        """Create fresh options because UC mutates them during startup."""
+        options = uc.ChromeOptions()
+        options.add_argument("--disable-popup-blocking")
+        options.page_load_strategy = 'eager'
+        options.add_argument("--window-size=1920,1080")
+        options.add_experimental_option("prefs", {
+            "profile.default_content_setting_values.popups": 1,
+            "profile.default_content_setting_values.notifications": 2,
+        })
+        if debug_data_dir:
+            options.add_argument(f"--user-data-dir={debug_data_dir}")
+            if profile_dir:
+                options.add_argument(f"--profile-directory={profile_dir}")
+        return options
 
     # UC can be flaky connecting to Chrome — retry up to 3 times
     last_err = None
     for attempt in range(1, 4):
         try:
             logging.info("UC launch attempt %d/3...", attempt)
-            driver = uc.Chrome(options=options, version_main=138)
+            driver = uc.Chrome(options=_build_uc_options(), version_main=138,
+                               user_multi_procs=isolated_browser)
             driver.set_page_load_timeout(60)
             logging.info("UC connected successfully")
             return driver
@@ -2021,8 +2256,9 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
             last_err = e
             logging.warning("UC attempt %d failed: %s", attempt, e)
             if attempt < 3:
-                # Kill any zombie Chrome and clean locks
-                _kill_chrome()
+                # Never kill a sibling collector's browser in isolated mode.
+                if not isolated_browser:
+                    _kill_chrome()
                 if chrome_profile:
                     for lf in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
                         try:
@@ -2877,12 +3113,14 @@ def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
 def check_hd_status_phase(driver, deal_list, tsv_output_path,
                           chrome_profile=None, profile_dir=None,
                           remote_debug=None, zip_code=DEFAULT_ZIP,
-                          hd_login=False, recheck=False, hours=8):
+                          hd_login=False, recheck=False, hours=8,
+                          max_checks=100):
     """Phase 2: Check HD status using random-sized batches (1-10 tabs).
 
     Work is spread uniformly over *hours* hours so traffic looks natural.
-    Items are processed oldest-first. Each item gets an API check first;
-    only items that fail the API are queued for the browser batch.
+    Items are processed newest-first so a bounded run checks the most useful
+    candidates. Each item gets an API check first; only items that fail the
+    API are queued for the browser batch.
     Items updated within the last 24 hours are skipped.
 
     If *recheck* is True, items with 'blocked' or 'error' status are also
@@ -2917,16 +3155,21 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 continue
         to_check.append((i, deal))
 
-    # Sort by original_timestamp ascending (oldest first)
-    to_check.sort(key=lambda x: x[1].get('original_timestamp', ''))
+    # Prefer newly discovered items; old candidates can be checked by later
+    # runs without generating a large burst of Home Depot traffic.
+    to_check.sort(key=lambda x: x[1].get('original_timestamp', ''),
+                  reverse=True)
+    available_count = len(to_check)
+    if max_checks is not None:
+        to_check = to_check[:max_checks]
 
     recheck_count = sum(1 for _, d in to_check
                         if d.get('hd_status') in (HDStatus.BLOCKED,
                                                   HDStatus.ERROR,
                                                   HDStatus.FAILURE))
     print(f"\n{'='*60}")
-    print(f"PHASE 2: Checking {len(to_check)} items on Home Depot "
-          f"(oldest first)")
+    print(f"PHASE 2: Checking {len(to_check)} of {available_count} items "
+          f"on Home Depot (newest first)")
     if skipped_24h:
         print(f"  Skipped {skipped_24h} items updated within 24h")
     if recheck:
@@ -3250,6 +3493,9 @@ def main():
                         help="Spread Phase 2 browser checks over this many "
                              "hours (default: 8). Work is distributed "
                              "uniformly with random jitter.")
+    parser.add_argument("--max-hd-checks", type=int, default=100,
+                        help="Maximum Home Depot product pages to verify per "
+                             "run (default: 100). Use 0 to skip HD checks.")
 
     args = parser.parse_args()
 
@@ -3459,7 +3705,8 @@ def main():
                                           zip_code=args.zip,
                                           hd_login=False,
                                           recheck=args.recheck,
-                                          hours=args.hours)
+                                          hours=args.hours,
+                                          max_checks=args.max_hd_checks)
                 except KeyboardInterrupt:
                     # User pressed Ctrl-C: stop checking but still publish
                     # whatever we have so far (report + commit + push below).
