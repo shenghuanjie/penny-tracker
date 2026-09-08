@@ -32,6 +32,7 @@ BACKUP_TSV_FILENAME = "rebel_final_report_backup.tsv"
 DEFAULT_ZIP = "94538"
 REBEL_SAVINGS_DEAL_URL = "https://www.rebelsavings.com/home-depot?zip={zip}"
 TRIP_LIST_LIMIT = 60
+LISTING_RETENTION_DAYS = 21
 
 DEFAULT_CHROME_PROFILE = "/Users/shengh4/Library/Application Support/Google/Chrome"
 DEFAULT_PROFILE_DIR = "Profile 1"
@@ -466,24 +467,29 @@ def generate_html_report(deals, output_path):
             </div>
         </article>"""
 
-    # --- Build penny SKU lookup for the scanner tab ---
+    # --- Build identifier lookup for the scanner tab ---
     import json as _json
-    penny_skus = {}
+    item_identifiers = {}
     for d in deals:
         status = d.get('hd_status', '') or ''
         url = d.get('url', '')
         if not url or 'homedepot.com' not in url:
             continue
-        # Use Store SKU if available, otherwise fall back to Internet # from URL
-        sku = d.get('sku', '') or extract_sku_from_url(url)
-        if not sku:
-            continue
-        penny_skus[sku] = {
-            "name": d.get('name', '')[:80],
-            "status": status,
-            "url": url,
-        }
-    penny_skus_json = _json.dumps(penny_skus)
+        identifiers = (
+            ('Store SKU', d.get('sku', '')),
+            ('Internet #', extract_sku_from_url(url)),
+        )
+        for identifier_type, identifier in identifiers:
+            normalized = ''.join(ch for ch in str(identifier) if ch.isdigit())
+            if not normalized:
+                continue
+            item_identifiers[normalized] = {
+                "name": d.get('name', '')[:80],
+                "status": status,
+                "url": url,
+                "type": identifier_type,
+            }
+    item_identifiers_json = _json.dumps(item_identifiers)
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -559,7 +565,7 @@ def generate_html_report(deals, output_path):
                      border-radius: 6px; cursor: pointer; font-size: 14px; margin: 5px; }}
     .scanner-btn:hover {{ background: #e05800; }}
     .scanner-btn:disabled {{ background: #ccc; cursor: not-allowed; }}
-    .scanner-preview {{ max-width: 100%; max-height: 300px; border-radius: 8px;
+    .scanner-preview {{ width: auto; max-width: 100%; max-height: 420px; border-radius: 8px;
                          margin: 10px 0; display: none; }}
     .scanner-progress {{ display: none; margin: 15px 0; }}
     .scanner-progress .bar {{ height: 6px; background: #eee; border-radius: 3px; overflow: hidden; }}
@@ -570,6 +576,7 @@ def generate_html_report(deals, output_path):
     .sku-result {{ padding: 12px 16px; margin: 8px 0; border-radius: 8px; border: 1px solid #eee; }}
     .sku-result.match {{ background: #e8f5e9; border-color: #4caf50; }}
     .sku-result.penny-match {{ background: #e3f2fd; border-color: #2196f3; }}
+    .sku-result.old-match {{ background: #f3f4f4; border-color: #95a5a6; }}
     .sku-result.no-match {{ background: #fff3e0; border-color: #ff9800; }}
     .sku-result .sku-num {{ font-weight: bold; font-size: 16px; font-family: monospace; }}
     .sku-result .sku-status {{ font-size: 13px; margin-top: 4px; }}
@@ -766,7 +773,7 @@ def generate_html_report(deals, output_path):
     <div class="scanner-container">
         <h3>SKU Scanner</h3>
         <p style="color:#666; margin-bottom:15px;">
-            Upload a receipt, shelf tag, or price scanner photo.
+            Upload a product, shelf, receipt, or price scanner photo.
             OCR runs in your browser — nothing is uploaded to any server.
         </p>
 
@@ -797,7 +804,7 @@ def generate_html_report(deals, output_path):
     </div>
     </div>
 
-    <script>const PENNY_SKUS = {penny_skus_json};</script>
+    <script>const ITEM_IDENTIFIERS = {item_identifiers_json};</script>
     """
 
     # --- JavaScript: tab switching + column sorting ---
@@ -946,7 +953,9 @@ function resetSort() {
 }
 </script>
 
-<!-- Tesseract.js for client-side OCR -->
+<!-- Free client-side image, barcode, and OCR tools -->
+<script src="https://cdn.jsdelivr.net/npm/heic-to@1.5.2/dist/iife/heic-to.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 (function() {
@@ -1002,10 +1011,116 @@ function resetSort() {
         }
     });
 
+    const CONFIRMED_PENNY_STATUSES = new Set(['penny_new', 'penny']);
+    const OLD_PENNY_STATUSES = new Set(['penny_old']);
+
+    function loadImage(blob) {
+        return new Promise((resolve, reject) => {
+            const image = new Image();
+            const url = URL.createObjectURL(blob);
+            image.onload = () => {
+                URL.revokeObjectURL(url);
+                resolve(image);
+            };
+            image.onerror = () => {
+                URL.revokeObjectURL(url);
+                reject(new Error('This browser could not decode the image.'));
+            };
+            image.src = url;
+        });
+    }
+
+    async function decodeImage(file) {
+        try {
+            return await loadImage(file);
+        } catch (error) {
+            const isHeic = /heic|heif/i.test(file.type) || /\\.hei[cf]$/i.test(file.name);
+            if (!isHeic || typeof HeicTo !== 'function') throw error;
+            progressLabel.textContent = 'Converting HEIC photo...';
+            const converted = await HeicTo({blob: file, type: 'image/jpeg', quality: 0.92});
+            return loadImage(converted);
+        }
+    }
+
+    function makeCanvas(image, sourceX, sourceY, sourceWidth, sourceHeight,
+                        maxDimension = 2600) {
+        const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+        canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+        canvas.getContext('2d').drawImage(
+            image, sourceX, sourceY, sourceWidth, sourceHeight,
+            0, 0, canvas.width, canvas.height);
+        return canvas;
+    }
+
+    function buildScanPasses(image) {
+        const width = image.naturalWidth;
+        const height = image.naturalHeight;
+        const passes = [makeCanvas(image, 0, 0, width, height)];
+        if (Math.max(width, height) < 3000) return passes;
+
+        const overlap = 0.12;
+        const tileWidth = width * (0.5 + overlap / 2);
+        const tileHeight = height * (0.5 + overlap / 2);
+        for (const row of [0, 1]) {
+            for (const column of [0, 1]) {
+                const sourceX = column === 0 ? 0 : width - tileWidth;
+                const sourceY = row === 0 ? 0 : height - tileHeight;
+                passes.push(makeCanvas(
+                    image, sourceX, sourceY, tileWidth, tileHeight));
+            }
+        }
+        return passes;
+    }
+
+    function extractIdentifiers(text) {
+        const identifiers = new Set();
+        const candidatePatterns = [
+            /\\b\\d{6,14}\\b/g,
+            /\\b(?:\\d{1,4}[._-])+\\d{1,4}\\b/g,
+            /\\b\\d{1,4}(?:[ \\t]\\d{3}){1,4}\\b/g
+        ];
+        for (const match of candidatePatterns.flatMap(pattern => text.match(pattern) || [])) {
+            const normalized = match.replace(/\\D/g, '');
+            if (normalized.length >= 6 && normalized.length <= 14) {
+                identifiers.add(normalized);
+            }
+        }
+        return identifiers;
+    }
+
+    async function detectBarcodes(image) {
+        const detected = new Set();
+        if ('BarcodeDetector' in window) {
+            try {
+                const supported = await BarcodeDetector.getSupportedFormats();
+                const formats = ['upc_a', 'upc_e', 'ean_8', 'ean_13', 'code_39', 'code_128']
+                    .filter(format => supported.includes(format));
+                const detector = new BarcodeDetector({formats});
+                for (const barcode of await detector.detect(image)) {
+                    const normalized = (barcode.rawValue || '').replace(/\\D/g, '');
+                    if (normalized) detected.add(normalized);
+                }
+            } catch (_) {
+                // Fall through to ZXing below.
+            }
+        }
+        if (detected.size === 0 && window.ZXing) {
+            try {
+                const reader = new ZXing.BrowserMultiFormatReader();
+                const barcode = await reader.decodeFromImageElement(image);
+                const normalized = barcode.getText().replace(/\\D/g, '');
+                if (normalized) detected.add(normalized);
+                reader.reset();
+            } catch (_) {
+                // A wide photo often has no decodable barcode; OCR still runs.
+            }
+        }
+        return detected;
+    }
+
     async function processImage(file) {
-        // Show preview
-        const url = URL.createObjectURL(file);
-        preview.src = url;
         preview.style.display = 'block';
 
         // Reset
@@ -1015,78 +1130,92 @@ function resetSort() {
         toggleOcr.style.display = 'none';
         progress.style.display = 'block';
         progressFill.style.width = '0%';
-        progressLabel.textContent = 'Loading OCR engine...';
+        progressLabel.textContent = 'Preparing image...';
 
+        let worker;
         try {
-            const { data } = await Tesseract.recognize(file, 'eng', {
+            const image = await decodeImage(file);
+            const scanPasses = buildScanPasses(image);
+            preview.src = scanPasses[0].toDataURL('image/jpeg', 0.86);
+            const identifiers = await detectBarcodes(image);
+            const ocrTexts = [];
+            let currentPass = 0;
+
+            worker = await Tesseract.createWorker('eng', 1, {
                 logger: m => {
                     if (m.status === 'recognizing text') {
                         const pct = Math.round((m.progress || 0) * 100);
-                        progressFill.style.width = pct + '%';
-                        progressLabel.textContent = `Scanning... ${pct}%`;
+                        const totalPct = Math.round(
+                            ((currentPass + (m.progress || 0)) / scanPasses.length) * 100);
+                        progressFill.style.width = totalPct + '%';
+                        progressLabel.textContent =
+                            `Scanning section ${currentPass + 1}/${scanPasses.length}... ${pct}%`;
                     } else if (m.status) {
                         progressLabel.textContent = m.status;
                     }
                 }
             });
 
+            for (currentPass = 0; currentPass < scanPasses.length; currentPass++) {
+                const { data } = await worker.recognize(scanPasses[currentPass]);
+                ocrTexts.push(data.text);
+                for (const identifier of extractIdentifiers(data.text)) {
+                    identifiers.add(identifier);
+                }
+                renderIdentifiers(identifiers);
+            }
+
             progressFill.style.width = '100%';
             progressLabel.textContent = 'Done!';
             setTimeout(() => { progress.style.display = 'none'; }, 1500);
 
             // Show raw OCR text
-            ocrTextEl.textContent = data.text;
+            ocrTextEl.textContent = ocrTexts.join('\\n\\n--- next image section ---\\n\\n');
             toggleOcr.style.display = 'inline';
 
-            // Extract and check SKUs
-            analyzeText(data.text);
-
         } catch (err) {
-            progressLabel.textContent = 'OCR failed: ' + err.message;
+            progressLabel.textContent = 'Scan failed: ' + err.message;
             progressFill.style.width = '0%';
+        } finally {
+            if (worker) await worker.terminate();
         }
     }
 
-    function analyzeText(text) {
-        // Extract potential SKUs: 6-12 digit numbers
-        const allNums = text.match(/\\b\\d{6,12}\\b/g) || [];
-        // Also look for explicit SKU/model patterns
-        const skuPattern = /(?:SKU|sku|model|Model|item|Item)[#:\\s]*(\\d{6,9})/g;
-        let m;
-        while ((m = skuPattern.exec(text)) !== null) {
-            if (!allNums.includes(m[1])) allNums.push(m[1]);
-        }
-
-        // Deduplicate
-        const skus = [...new Set(allNums)];
+    function renderIdentifiers(identifierSet) {
+        const skus = [...identifierSet].sort((left, right) => {
+            const leftKnown = ITEM_IDENTIFIERS[left] ? 0 : 1;
+            const rightKnown = ITEM_IDENTIFIERS[right] ? 0 : 1;
+            return leftKnown - rightKnown || left.localeCompare(right);
+        });
 
         if (skus.length === 0) {
-            results.innerHTML = '<p style="color:#999;">No SKU numbers found in image. ' +
-                'Try a clearer photo of the receipt or shelf tag.</p>';
+            results.innerHTML = '<p style="color:#999;">No item identifiers found yet. ' +
+                'For a wide shelf photo, scanning can take a minute.</p>';
             return;
         }
 
-        let html = '<h3>Found ' + skus.length + ' potential SKU(s)</h3>';
+        let html = '<h3>Found ' + skus.length + ' potential identifier(s)</h3>';
         let pennyCount = 0;
 
         for (const sku of skus) {
-            const info = PENNY_SKUS[sku];
+            const info = ITEM_IDENTIFIERS[sku];
             if (info) {
-                const isPenny = info.status.includes('penny');
-                const cssClass = isPenny ? 'penny-match' : 'match';
+                const isPenny = CONFIRMED_PENNY_STATUSES.has(info.status);
+                const isOldPenny = OLD_PENNY_STATUSES.has(info.status);
+                const cssClass = isPenny ? 'penny-match' : (isOldPenny ? 'old-match' : 'match');
                 if (isPenny) pennyCount++;
                 const statusLabel = info.status.toUpperCase().replace(/_/g, ' ');
                 html += `<div class="sku-result ${cssClass}">
-                    <div class="sku-num">${isPenny ? '🎯 ' : '✅ '}${sku}</div>
+                    <div class="sku-num">${isPenny ? 'PENNY: ' : ''}${sku}</div>
                     <div class="sku-status">
-                        <b>${info.name}</b><br>
+                        <b>${info.name}</b><br>${info.type} &nbsp;|&nbsp;
                         Status: <span class="${info.status}">${statusLabel}</span>
                         &nbsp;|&nbsp; <a href="${info.url}" target="_blank">View on HD</a>
                     </div>
                 </div>`;
             } else {
                 html += `<div class="sku-result no-match">
-                    <div class="sku-num">❓ ${sku}</div>
+                    <div class="sku-num">${sku}</div>
                     <div class="sku-status">Not in our tracker &nbsp;|&nbsp;
                         <a href="https://www.homedepot.com/s/${sku}" target="_blank">Search HD</a>
                     </div>
@@ -1097,7 +1226,7 @@ function resetSort() {
         if (pennyCount > 0) {
             html = `<div style="background:#e3f2fd; padding:12px 16px; border-radius:8px;
                      margin-bottom:15px; font-size:16px;">
-                     🎯 <b>${pennyCount} penny item(s) found!</b></div>` + html;
+                     <b>${pennyCount} confirmed penny item(s) found.</b></div>` + html;
         }
 
         results.innerHTML = html;
@@ -2776,7 +2905,7 @@ def _extract_rebel_department(row, title_lines):
 
 def collect_rebel_items(driver, deal_list, seen_ids, tsv_output_path,
                         zip_code=DEFAULT_ZIP, max_items=float('inf'),
-                        max_days=60):
+                        max_days=LISTING_RETENTION_DAYS):
     """Phase 1: Scroll RebelSavings and collect items. No HD checks.
     Opens each modal to get HD URL + stock status, then closes it.
     Uses a clean UC session (no profile) to avoid Cloudflare issues."""
@@ -3600,9 +3729,9 @@ def main():
             org_timestamp = deal_row.get("original_timestamp", "")
             status = deal_row.get("hd_status", "")
 
-            # Remove all items older than 21 days (3 weeks)
+            # Keep cleanup aligned with the Phase 1 collection window.
             if org_timestamp and not is_within_x_days(
-                    org_timestamp, now_ts, days=21):
+                    org_timestamp, now_ts, days=LISTING_RETENTION_DAYS):
                 if status in (HDStatus.PENNY_NEW, HDStatus.PENNY,
                                HDStatus.PENNY_OLD):
                     removed_penny_old += 1
