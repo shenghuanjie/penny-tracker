@@ -183,12 +183,18 @@ DISABLESLEEP_SET=false
 # password in cleartext is risky. Lock it down: chmod 600 ~/.sudo_pass
 SUDO_PASS_FILE="$HOME/.sudo_pass"
 
-# Helper: run pmset with sudo, trying cached sudo, then password file.
-_sudo_pmset() {
+# Try pmset without opening a password prompt. This is required during cleanup
+# because cleanup may be running in response to Ctrl+C.
+_sudo_pmset_noninteractive() {
     sudo -n pmset "$@" 2>/dev/null \
         || { [[ -f "$SUDO_PASS_FILE" ]] \
              && sudo -S pmset "$@" < "$SUDO_PASS_FILE" 2>/dev/null; } \
-        || sudo pmset "$@"
+        || return 1
+}
+
+# Startup may ask once because disabling lid-close sleep requires permission.
+_sudo_pmset() {
+    _sudo_pmset_noninteractive "$@" || sudo pmset "$@"
 }
 
 if command -v pmset &>/dev/null; then
@@ -201,22 +207,34 @@ if command -v pmset &>/dev/null; then
     fi
 fi
 
+CLEANUP_DONE=false
 cleanup() {
+    exit_code=$?
+    [[ "$CLEANUP_DONE" == true ]] && return
+    CLEANUP_DONE=true
+    trap - EXIT INT TERM
+
+    # Stop caffeinate (this instance and any strays we started)
+    [[ -n "${CAFF_PID:-}" ]] && kill "$CAFF_PID" 2>/dev/null
+    pkill -f "caffeinate -si -w $$" 2>/dev/null || true
+
     # Restore lid-close sleep behavior
     if [[ "$DISABLESLEEP_SET" == true ]]; then
         echo ""
         echo "🔓 Restoring lid-close sleep setting..."
-        if _sudo_pmset -a disablesleep 0; then
+        if _sudo_pmset_noninteractive -a disablesleep 0; then
             echo "   > Lid-close sleep re-enabled."
         else
-            echo "   > WARNING: could not restore disablesleep. "
+            echo "   > WARNING: cleanup cannot prompt for a password."
             echo "     Run manually: sudo pmset -a disablesleep 0"
         fi
     fi
-    # Stop caffeinate (this instance and any strays we started)
-    [[ -n "${CAFF_PID:-}" ]] && kill "$CAFF_PID" 2>/dev/null
-    pkill -f "caffeinate -si -w $$" 2>/dev/null || true
+
+    exit "$exit_code"
 }
-trap cleanup EXIT INT TERM
+
+trap cleanup EXIT
+trap 'echo ""; echo "Stopping..."; exit 130' INT
+trap 'exit 143' TERM
 
 run_pipeline

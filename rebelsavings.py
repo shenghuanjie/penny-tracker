@@ -3535,11 +3535,15 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                     warm_up_hd_session(driver, zip_code=zip_code)
                 except Exception as e:
                     print(f"   Warm-up failed: {e}")
-        elif batch_checked > 0:
+        elif (batch_checked > 0
+              and i + cur_batch_size < len(browser_queue)):
             consecutive_blocks = 0
-            # Browse HD homepage to build trust between batches
+            # Keep the existing page active between batches. A fresh
+            # navigation here can block for the full page-load timeout and
+            # make the checker appear stuck after a completed batch.
             try:
-                browse_hd_homepage(driver)
+                print("   Keeping the HD session active between batches...")
+                simulate_human_behavior(driver, duration=random.uniform(3, 6))
             except Exception:
                 pass
 
