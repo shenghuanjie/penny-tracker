@@ -2025,8 +2025,6 @@ def check_hd_item_tab_status(driver, name=''):
     """
     Analyzes the CURRENT active tab (Home Depot) to determine status.
     Does NOT perform navigation (driver.get).
-    Simulates human browsing before reading the page to feed Akamai's
-    sensor script with interaction data.
 
     Returns one of:
       PENNY_NEW   — $0.01 with Ship To Store or Delivery available
@@ -2038,19 +2036,9 @@ def check_hd_item_tab_status(driver, name=''):
     """
     print(f"   > Verifying: {name[:25]}...")
 
-    # Simulate human browsing the product page before checking anything.
-    simulate_human_behavior(driver, duration=random.uniform(5, 12))
-
     # --- Stage 0: Immediate Block/Error Check ---
-    if "Access Denied" in driver.title:
-        print(f"   > Blocked: Access Denied title.")
-        return HDStatus.BLOCKED
-
-    error_msgs = driver.find_elements(
-        By.XPATH, "//div[@class='msg' and contains(text(), 'Something went wrong')]")
-
-    if error_msgs:
-        print(f"   > Blocked/Error detected: 'Oops' message found.")
+    if is_hd_blocked(driver):
+        print("   > Home Depot block page detected.")
         return HDStatus.BLOCKED
 
     wait = WebDriverWait(driver, 8)
@@ -2402,15 +2390,25 @@ def get_driver(chrome_profile=None, profile_dir=None, remote_debug=None):
 def is_hd_blocked(driver):
     """Check if Home Depot has blocked the current page."""
     try:
-        if "Access Denied" in driver.title:
+        title = (driver.title or "").lower()
+        current_url = (driver.current_url or "").lower()
+        if any(signal in title for signal in (
+                "access denied", "error page", "verify you are human",
+                "robot or human")):
             return True
-        # Akamai bot manager "Oops" page
+        if any(signal in current_url for signal in (
+                "/blocked", "/captcha", "challenge")):
+            return True
+
         error_msgs = driver.find_elements(
             By.XPATH, "//div[@class='msg' and contains(text(), 'Something went wrong')]")
         if error_msgs:
             return True
-        # Also check for the error page title pattern
-        if "Error Page" in driver.title:
+
+        body_text = driver.find_element(By.TAG_NAME, "body").text[:2000].lower()
+        if any(signal in body_text for signal in (
+                "access denied", "verify you are human", "unusual traffic",
+                "complete the security check")):
             return True
     except Exception:
         pass
@@ -2477,23 +2475,15 @@ def login_hd_manual(driver):
 
 def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP, hd_login=False):
     """
-    Establish a trusted session on homedepot.com by optionally logging in,
-    setting the ZIP code, and browsing briefly.
+    Prepare homedepot.com by optionally logging in and setting the ZIP code.
     """
-    print(f"Warming up Home Depot session (ZIP: {zip_code})...")
+    print(f"Preparing Home Depot session (ZIP: {zip_code})...")
 
     driver.get("https://www.homedepot.com")
     time.sleep(random.uniform(4, 7))
 
     if is_hd_blocked(driver):
-        print("   > Blocked on initial load. Clearing cookies and retrying...")
-        clear_hd_cookies(driver)
-        time.sleep(random.uniform(10, 20))
-        driver.get("https://www.homedepot.com")
-        time.sleep(random.uniform(4, 7))
-
-    if is_hd_blocked(driver):
-        print("   > Still blocked after retry. HD session may be compromised.")
+        print("   > Blocked on initial load. Stopping Home Depot checks.")
         return False
 
     # Manual login if requested
@@ -2554,17 +2544,7 @@ def warm_up_hd_session(driver, zip_code=DEFAULT_ZIP, hd_login=False):
     except Exception as e:
         print(f"   > ZIP setup failed (non-fatal): {e}")
 
-    # Build Akamai sensor trust with realistic browsing behavior.
-    # This is critical — the sensor collects mouse/scroll/timing data
-    # and flags sessions with no human interaction as bots.
-    print("   > Building sensor trust (browsing HD)...")
-    simulate_human_behavior(driver, duration=random.uniform(15, 30))
-
-    # Visit 2-3 category pages to establish a natural browsing pattern
-    for _ in range(random.randint(2, 3)):
-        browse_hd_homepage(driver)
-
-    print("   > HD session warm-up complete.")
+    print("   > HD session ready.")
     return True
 
 
@@ -3243,13 +3223,14 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                           chrome_profile=None, profile_dir=None,
                           remote_debug=None, zip_code=DEFAULT_ZIP,
                           hd_login=False, recheck=False, hours=8,
-                          max_checks=100):
-    """Phase 2: Check HD status using random-sized batches (1-10 tabs).
+                          max_checks=None):
+    """Phase 2: Check HD status sequentially in one reused browser tab.
 
-    Work is spread uniformly over *hours* hours so traffic looks natural.
-    Items are processed newest-first so a bounded run checks the most useful
-    candidates. Each item gets an API check first; only items that fail the
-    API are queued for the browser batch.
+    Work is paced over *hours* hours and stops when that deadline is reached.
+    Items are processed newest-first. An explicit *max_checks* value can bound
+    a run; by default every eligible candidate is checked. Each item gets an
+    API check first; only items that fail the API are queued for the browser
+    batch.
     Items updated within the last 24 hours are skipped.
 
     If *recheck* is True, items with 'blocked' or 'error' status are also
@@ -3284,8 +3265,7 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 continue
         to_check.append((i, deal))
 
-    # Prefer newly discovered items; old candidates can be checked by later
-    # runs without generating a large burst of Home Depot traffic.
+    # Prefer newly discovered items when an explicit limit is used.
     to_check.sort(key=lambda x: x[1].get('original_timestamp', ''),
                   reverse=True)
     available_count = len(to_check)
@@ -3310,13 +3290,16 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         return
 
     checked = 0
+    failed = 0
     restart_count = 0
     max_restarts = 3
+    max_item_attempts = 3
+    item_attempts = {}
 
     # All items go straight to browser (API is always blocked by Akamai)
     browser_queue = list(to_check)
 
-    # ── Pass 2: Browser batch checks (random batch size 1-10) ───────
+    # ── Pass 2: Sequential browser checks ──────────────────────────
     if not browser_queue:
         print(f"\nPhase 2 complete: {checked} items checked on HD.")
         return
@@ -3342,13 +3325,13 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
     total_seconds = hours * 3600
     phase2_start = time.time()
     items_remaining = len(browser_queue)
-    # Average seconds per item, with a floor so we don't go too fast
-    avg_interval = max(total_seconds / max(items_remaining, 1), 30)
+    # Keep at least one minute between item starts. The hard deadline means
+    # unfinished items remain in the TSV for the next run.
+    avg_interval = max(total_seconds / max(items_remaining, 1), 60)
     print(f"\n   Pacing: {items_remaining} items over {hours}h "
           f"(~{avg_interval:.0f}s per item, ~{avg_interval/60:.1f}min)")
 
     main_window = driver.current_window_handle
-    consecutive_blocks = 0
     batch_num = 0
     i = 0
 
@@ -3370,15 +3353,36 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         except Exception:
             pass
 
+    def _retry_item(entry, reason, batch_n, batch_size):
+        nonlocal failed
+        idx, deal = entry
+        attempts = item_attempts[idx]
+        if attempts < max_item_attempts:
+            browser_queue.append(entry)
+            print(f"   Will retry: {deal['name'][:45]} "
+                  f"({attempts}/{max_item_attempts}) — {reason}")
+            return
+
+        failed += 1
+        print(f"   Giving up: {deal['name'][:45]} after "
+              f"{attempts} attempts — {reason}")
+        _log_item(batch_n, batch_size, deal['name'],
+                  "RETRY_EXHAUSTED", deal.get('url', ''))
+
     while i < len(browser_queue):
         batch_start = time.time()
 
-        # Random batch size 1-10 for each batch
-        cur_batch_size = random.randint(1, 10)
+        elapsed_total = time.time() - phase2_start
+        if total_seconds > 0 and elapsed_total >= total_seconds:
+            print(f"\n   Reached the {hours}h Phase 2 deadline. "
+                  "Remaining items will resume next run.")
+            break
+
+        # Process exactly one product at a time in the existing tab.
+        cur_batch_size = 1
         batch = browser_queue[i:i + cur_batch_size]
         batch_num += 1
 
-        elapsed_total = time.time() - phase2_start
         remaining_time = max(total_seconds - elapsed_total, 0)
         items_left = len(browser_queue) - i
         ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -3402,16 +3406,24 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
             warm_up_hd_session(driver, zip_code=zip_code, hd_login=hd_login)
             main_window = driver.current_window_handle
 
-        # ── Open a tab for each item in the batch ──────────────────
+        # ── Load one item directly in the reused tab ───────────────
         tab_map = []  # (idx, deal, tab_handle, nav_ok)
+        block_detected = False
         for idx, deal in batch:
             hd_url = deal['url']
             name = deal['name']
+            item_attempts[idx] = item_attempts.get(idx, 0) + 1
             try:
-                driver.execute_script("window.open('', '_blank');")
-                new_tab = driver.window_handles[-1]
-                driver.switch_to.window(new_tab)
-                nav_ok = navigate_to_hd_product(driver, hd_url, name=name)
+                driver.switch_to.window(main_window)
+                driver.get(hd_url)
+                time.sleep(random.uniform(2, 4))
+                if is_hd_blocked(driver):
+                    deal_list[idx]['hd_status'] = 'unchecked'
+                    print(f"   Blocked while loading: {name[:50]}")
+                    _log_item(batch_num, 1, name, HDStatus.BLOCKED, hd_url)
+                    block_detected = True
+                    break
+                nav_ok = True
                 # Capture the real canonical HD URL (HD redirects to the full
                 # /p/ProductName/XXXXXXXXXX URL which contains the true SKU)
                 if nav_ok:
@@ -3424,18 +3436,21 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                             print(f"   URL updated: …{canonical_url[-30:]}")
                     except Exception:
                         pass
-                tab_map.append((idx, deal, new_tab, nav_ok))
-                print(f"   Opened: {name[:55]}"
-                      f" {'✅' if nav_ok else '❌'}")
-                # Stagger between tab opens
-                if len(batch) > 1:
-                    time.sleep(random.uniform(1.5, 3.0))
+                tab_map.append((idx, deal, main_window, nav_ok))
+                print(f"   Loaded: {name[:55]}")
             except Exception as exc:
-                print(f"   Failed to open tab for {name[:40]}: {exc}")
+                print(f"   Failed to load item {name[:40]}: {exc}")
+                _retry_item((idx, deal), str(exc), batch_num, len(batch))
+
+        if block_detected:
+            _save_tsv()
+            print("   Circuit breaker opened. Stopping until the next run.")
+            break
 
         if not tab_map:
-            print("   No tabs opened — skipping batch")
-            i += cur_batch_size
+            print("   No tabs opened — items queued for retry")
+            _close_extra_tabs(main_window)
+            i += len(batch)
             continue
 
         # ── Wait for pages to finish loading ───────────────────────
@@ -3468,7 +3483,14 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                         print(f"   Department: {page_dept}")
                     hd_status = check_hd_item_tab_status(driver, name=name)
                 else:
-                    hd_status = HDStatus.FAILURE
+                    raise RuntimeError("all navigation methods failed")
+
+                if hd_status == HDStatus.BLOCKED:
+                    deal_list[idx]['hd_status'] = 'unchecked'
+                    print(f"   Blocked while verifying: {name[:50]}")
+                    _log_item(batch_num, 1, name, hd_status, hd_url)
+                    batch_blocked += 1
+                    continue
 
                 now = datetime.datetime.fromtimestamp(
                     time.time()).strftime(TIMESTAMP_FORMAT)
@@ -3488,11 +3510,10 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
                 checked += 1
                 batch_checked += 1
 
-                if hd_status == HDStatus.BLOCKED:
-                    batch_blocked += 1
             except Exception as exc:
                 print(f"   Error reading tab for {name[:40]}: {exc}")
                 _log_item(batch_num, len(batch), name, "EXCEPTION", hd_url)
+                _retry_item((idx, deal), str(exc), batch_num, len(batch))
 
         # ── Close all tabs except main ─────────────────────────────
         _close_extra_tabs(main_window)
@@ -3500,54 +3521,11 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         # ── Save TSV after each batch ──────────────────────────────
         _save_tsv()
 
-        # ── Track consecutive blocks (only BLOCKED status, not transient errors) ──
-        if batch_blocked > 0 and batch_blocked >= batch_checked:
-            consecutive_blocks += 1
-            print(f"   Batch {batch_num}: blocked by Akamai "
-                  f"({consecutive_blocks}/3)")
-            if consecutive_blocks >= 3:
-                # Clear cookies and wait 1 hour before resuming
-                print("\n   !!! 3 consecutive blocks detected.")
-                try:
-                    driver.delete_all_cookies()
-                    print("   Cleared all cookies.")
-                except Exception:
-                    pass
-                _save_tsv()
-                wait_mins = 60
-                print(f"   Waiting {wait_mins} minutes before resuming... "
-                      f"(Ctrl+C to stop)")
-                try:
-                    for minute in range(wait_mins):
-                        remaining = wait_mins - minute
-                        ts = datetime.datetime.now().strftime("%H:%M:%S")
-                        print(f"   [{ts}] Resuming in {remaining} min...",
-                              end="\r")
-                        time.sleep(60)
-                    print()
-                except KeyboardInterrupt:
-                    print("\n   Manually cancelled. Stopping.")
-                    break
-                consecutive_blocks = 0
-                # Warm up session again after cookie clear
-                print("   Warming up HD session...")
-                try:
-                    warm_up_hd_session(driver, zip_code=zip_code)
-                except Exception as e:
-                    print(f"   Warm-up failed: {e}")
-        elif (batch_checked > 0
-              and i + cur_batch_size < len(browser_queue)):
-            consecutive_blocks = 0
-            # Keep the existing page active between batches. A fresh
-            # navigation here can block for the full page-load timeout and
-            # make the checker appear stuck after a completed batch.
-            try:
-                print("   Keeping the HD session active between batches...")
-                simulate_human_behavior(driver, duration=random.uniform(3, 6))
-            except Exception:
-                pass
+        if batch_blocked:
+            print("   Circuit breaker opened. Stopping until the next run.")
+            break
 
-        i += cur_batch_size
+        i += len(batch)
 
         # ── Time-distributed pause ─────────────────────────────────
         items_left_after = len(browser_queue) - i
@@ -3557,22 +3535,20 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
         elapsed_total = time.time() - phase2_start
         remaining_time = max(total_seconds - elapsed_total, 0)
 
-        if remaining_time <= 0:
-            # Time window elapsed, but we do NOT stop — the window is only
-            # used for pacing. Keep going until every item is checked,
-            # using a modest jittered pause between batches.
-            target_interval = random.uniform(20, 45)
-        else:
-            target_interval = remaining_time / items_left_after
-            # Cap at 10 minutes — no point waiting longer between batches
-            target_interval = min(target_interval, 600)
-        # Add ±30% jitter
-        jitter = target_interval * random.uniform(-0.3, 0.3)
-        pause = max(target_interval + jitter, 15)
+        if total_seconds > 0 and remaining_time <= 0:
+            print(f"\n   Reached the {hours}h Phase 2 deadline. "
+                  "Remaining items will resume next run.")
+            break
+
+        target_interval = max(
+            remaining_time / max(items_left_after, 1), 60)
+        target_interval = min(target_interval, 600)
 
         # Account for time already spent on this batch
         batch_elapsed = time.time() - batch_start
-        pause = max(pause - batch_elapsed, 10)
+        pause = max(target_interval - batch_elapsed, 0)
+        if total_seconds > 0:
+            pause = min(pause, remaining_time)
 
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         print(f"   [{ts}] Sleeping {pause:.0f}s "
@@ -3583,6 +3559,9 @@ def check_hd_status_phase(driver, deal_list, tsv_output_path,
     elapsed = time.time() - phase2_start
     print(f"\nPhase 2 complete: {checked} items checked on HD "
           f"in {elapsed/3600:.1f}h.")
+    if failed:
+        print(f"   {failed} items could not be checked after "
+              f"{max_item_attempts} attempts; they remain eligible next run.")
     print(f"Detailed log: {log_path}")
 
 
@@ -3626,9 +3605,9 @@ def main():
                         help="Spread Phase 2 browser checks over this many "
                              "hours (default: 8). Work is distributed "
                              "uniformly with random jitter.")
-    parser.add_argument("--max-hd-checks", type=int, default=100,
+    parser.add_argument("--max-hd-checks", type=int, default=None,
                         help="Maximum Home Depot product pages to verify per "
-                             "run (default: 100). Use 0 to skip HD checks.")
+                             "run (default: unlimited). Use 0 to skip HD checks.")
 
     args = parser.parse_args()
 
@@ -3639,12 +3618,14 @@ def main():
 
     # --- LOGGING SETUP ---
     log_path = os.path.join(args.output_dir or ".", "rebelsavings.log")
+    log_has_content = (os.path.isfile(log_path)
+                       and os.path.getsize(log_path) > 0)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
-            logging.FileHandler(log_path, mode="w", encoding="utf-8"),
+            logging.FileHandler(log_path, mode="a", encoding="utf-8"),
             logging.StreamHandler(sys.stdout),
         ],
     )
@@ -3662,6 +3643,9 @@ def main():
             self._log.flush()
     sys.stdout = _TeeWriter(log_path, sys.__stdout__)
     sys.stderr = _TeeWriter(log_path, sys.__stderr__)
+    if log_has_content:
+        logging.info("%s", "=" * 60)
+    logging.info("Command: %s", " ".join(sys.argv))
     logging.info("Logging to %s", log_path)
     logging.info("Settings: phase=%s, recheck=%s, hours=%.1f",
                  args.phase, args.recheck, args.hours)
@@ -3780,11 +3764,16 @@ def main():
                                    profile_dir=args.profile_dir,
                                    remote_debug=args.remote_debug)
             print(f"\n{'='*60}")
-            print("SETUP: Warming up HD session with your profile")
+            print("SETUP: Preparing HD session with your profile")
             print(f"{'='*60}")
-            warm_up_hd_session(hd_driver, zip_code=args.zip,
-                               hd_login=args.hd_login)
-            print("HD session ready. You can walk away now.\n")
+            session_ready = warm_up_hd_session(
+                hd_driver, zip_code=args.zip, hd_login=args.hd_login)
+            if session_ready:
+                print("HD session ready. You can walk away now.\n")
+            else:
+                print("HD session unavailable. Skipping Phase 2.\n")
+                hd_driver.quit()
+                hd_driver = None
 
         try:
             # --- PHASE 1: Collect from RebelSavings (separate clean UC) ---

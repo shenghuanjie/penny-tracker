@@ -26,11 +26,11 @@ SKUs and UPCs from Facebook post images.
 ./run.sh
 ```
 
-The default run collects RebelSavings and Facebook data in parallel, verifies
-at most 20 of the newest Home Depot candidates over one hour, regenerates
-`index.html`, and publishes the results using the repository's existing Git
-workflow. It does not retry previously blocked requests unless explicitly
-requested.
+The default run collects RebelSavings and Facebook data in parallel, checks
+eligible Home Depot candidates for up to eight hours with no item-count cap,
+regenerates `index.html`, and publishes the results using the repository's
+existing Git workflow. It does not retry previously blocked requests unless
+explicitly requested.
 
 Useful controls:
 
@@ -51,10 +51,10 @@ waiting for input. After RebelSavings finishes, the pipeline retries Facebook
 once with the existing Chrome profile so it can reuse an active login. Use
 `--sequential` when debugging browser behavior.
 
-The bounded Home Depot verification pass starts after both collectors finish.
-It is intentionally not run concurrently because parallel product-page traffic
-causes more verification challenges; that phase already uses controlled tab
-batches internally.
+The Home Depot verification pass starts after both collectors finish. It uses
+one reused tab, direct product URLs, and at least one minute between item starts.
+The eight-hour window is a hard deadline; unchecked items remain queued for the
+next run. A Home Depot challenge or block page stops the pass immediately.
 
 Lower `--max-hd-checks` when Home Depot begins returning verification pages.
 The checker retains unprocessed candidates for a later run.

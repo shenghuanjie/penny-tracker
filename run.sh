@@ -6,13 +6,13 @@
 #   2. Phase 1: collect deals from RebelSavings
 #   3. Optionally collect Facebook group posts
 #   4. Update HTML report + git push + wait for GitHub Pages
-#   5. Phase 2: check a bounded set of recent HD candidates
+#   5. Phase 2: check all eligible HD candidates
 #   6. Update HTML report + git push
 #
 # Keeps Mac awake via caffeinate for the entire run.
 #
 # Usage:
-#   ./run.sh            # parallel collectors + 20 HD checks over ~1 hour
+#   ./run.sh            # parallel collectors + all eligible HD checks over ~8 hours
 #   ./run.sh --skip1    # skip phase 1, start from phase 2
 #   ./run.sh --sequential   # collect both sources one at a time
 #   ./run.sh --no-facebook  # collect RebelSavings only
@@ -31,8 +31,8 @@ SKIP_PHASE1=false
 SCRAPE_FACEBOOK=true
 PARALLEL_COLLECTORS=true
 RETRY_BLOCKED=false
-MAX_HD_CHECKS=20
-HD_HOURS=1
+MAX_HD_CHECKS=""
+HD_HOURS=8
 
 usage() {
     echo "Usage: ./run.sh [--skip1] [--sequential | --no-facebook] [--retry-blocked]"
@@ -147,10 +147,15 @@ run_pipeline() {
         sleep 30
     fi
 
-    # ── Step 4: Phase 2 — check a bounded set of recent HD items ──
+    # ── Step 4: Phase 2 — check eligible HD items ──
     echo ""
-    echo ">>> Phase 2: Checking up to $MAX_HD_CHECKS recent HD items over $HD_HOURS hours"
-    PHASE2_ARGS=(--phase 2 --hours "$HD_HOURS" --max-hd-checks "$MAX_HD_CHECKS")
+    PHASE2_ARGS=(--phase 2 --hours "$HD_HOURS")
+    if [[ -n "$MAX_HD_CHECKS" ]]; then
+        echo ">>> Phase 2: Checking up to $MAX_HD_CHECKS recent HD items over $HD_HOURS hours"
+        PHASE2_ARGS+=(--max-hd-checks "$MAX_HD_CHECKS")
+    else
+        echo ">>> Phase 2: Checking all eligible HD items over $HD_HOURS hours"
+    fi
     if [[ "$RETRY_BLOCKED" == true ]]; then
         PHASE2_ARGS+=(--recheck)
     fi
@@ -192,19 +197,21 @@ _sudo_pmset_noninteractive() {
         || return 1
 }
 
-# Startup may ask once because disabling lid-close sleep requires permission.
-_sudo_pmset() {
-    _sudo_pmset_noninteractive "$@" || sudo pmset "$@"
-}
-
 if command -v pmset &>/dev/null; then
-    echo "🔒 Disabling lid-close sleep (needs sudo)..."
-    if _sudo_pmset -a disablesleep 1; then
+    echo "🔒 Disabling lid-close sleep..."
+    if _sudo_pmset_noninteractive -a disablesleep 1; then
         DISABLESLEEP_SET=true
         echo "   > Lid-close sleep disabled. Mac stays awake with lid shut."
     else
-        echo "   > Could not disable lid-close sleep (continuing anyway)."
+        echo "ERROR: could not disable lid-close sleep non-interactively." >&2
+        echo "Run 'sudo -v' before starting, or configure the protected credential file." >&2
+        [[ -n "${CAFF_PID:-}" ]] && kill "$CAFF_PID" 2>/dev/null
+        exit 1
     fi
+else
+    echo "ERROR: pmset is unavailable; cannot guarantee lid-close operation." >&2
+    [[ -n "${CAFF_PID:-}" ]] && kill "$CAFF_PID" 2>/dev/null
+    exit 1
 fi
 
 CLEANUP_DONE=false
